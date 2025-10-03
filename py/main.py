@@ -6,13 +6,14 @@ from types import SimpleNamespace
 from toml import dump as toml_dump
 from toml import load as toml_load
 
-from classes import Note
+from src import steam
+from src.classes import Note
 
 
 def find_tagged_notes(tag: str, exact: bool = True) -> list[Note]:
     tagged_notes = []
-    for file in glob(f"{conf.vault}/**/*.md") + glob(f"{conf.vault}/*.md"):
-        if f"{conf.vault}/templates/" in file:
+    for file in glob(f"{CONF.vault}/**/*.md") + glob(f"{CONF.vault}/*.md"):
+        if f"{CONF.vault}/templates/" in file:
             continue
 
         note = Note(file)
@@ -100,16 +101,21 @@ def intersync_vaults(vault1: str, vault2: str, last_sync_time):
 
 
 def main():
-    global conf, info
-    with open(f"{Path.home()}/.config/rhg.toml", "r") as f:
-        conf = SimpleNamespace(**toml_load(f))
+    global CONF, info
+    with open(f"{Path.home()}/.config/rhg/rhg.toml", "r") as f:
+        CONF = SimpleNamespace(**toml_load(f))
+
+    # Steam Web API key to access the data
+    global KEY
+    key_file = Path(CONF.api_file)
+    KEY = key_file.read_text().strip()
 
     info_path = f"{Path(__file__).resolve().parent}/info.toml"
     with open(info_path, "r") as f:
         info_dict = toml_load(f)
     info = SimpleNamespace(**info_dict)
 
-    print(time())
+    steam.player_data(CONF.steam_id, key=KEY)
 
     # game_notes = find_tagged_notes("pandas", exact=False)
 
@@ -124,12 +130,13 @@ def main():
     # note.path = f"{conf.vault}/test test.md"
     # print("\n\n")
     # note.save()
-
+    """
     intersync_vaults(
         conf.vault,
         conf.work_vault,
         info.last_sync,
     )
+    """
 
     print(time())
 
