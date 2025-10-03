@@ -1,3 +1,6 @@
+import json
+import logging
+import logging.config
 from glob import glob
 from pathlib import Path
 from time import time
@@ -8,6 +11,39 @@ from toml import load as toml_load
 
 from src import steam
 from src.classes import Note
+
+"""
+# Set up the root logger
+logger = logging.getLogger(__name__)
+# Set the root logger to the MAX level required by any handler
+logger.setLevel(logging.DEBUG)
+# Add one file handler for the debug level (as a hidden file)
+fh = logging.FileHandler(".debug.log", "w")
+fh.setLevel(logging.DEBUG)
+# Add one file handler for the proper log file
+fh2 = logging.FileHandler("log.log", "w")
+fh2.setLevel(logging.INFO)
+# Format the output lines of the log files
+formatter = logging.Formatter(
+    "%(asctime)s | %(name)-12s | %(levelname)-8s : %(message)s",
+    datefmt="%d.%m %H:%M",
+)
+# Apply those formatters to both handlers
+fh.setFormatter(formatter)
+fh2.setFormatter(formatter)
+# Add the handlers to the root logger
+logger.addHandler(fh)
+logger.addHandler(fh2)
+"""
+
+with open("src/logging.json") as f:
+    config = json.load(f)
+logging.config.dictConfig(config)
+logger = logging.getLogger(__name__)
+
+logger.info("Info message from main")
+logger.info("IN BOTH FILES")
+logger.debug(Path.cwd())
 
 
 def find_tagged_notes(tag: str, exact: bool = True) -> list[Note]:
@@ -111,9 +147,16 @@ def main():
     KEY = key_file.read_text().strip()
 
     info_path = f"{Path(__file__).resolve().parent}/info.toml"
+
     with open(info_path, "r") as f:
         info_dict = toml_load(f)
     info = SimpleNamespace(**info_dict)
+
+    logger.error("finished auxiliary_module.Auxiliary.do_something")
+    logger.warning("calling auxiliary_module.some_function()")
+    logger.debug("done with auxiliary_module.some_function()")
+
+    logger.debug("only in debug")
 
     steam.player_data(CONF.steam_id, key=KEY)
 

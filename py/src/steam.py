@@ -1,9 +1,14 @@
+import logging
+
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 def player_data(id: int, key: str) -> None:
+    logger.info("Starting player data")
     url = f"http://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key={key}&steamids={id}&format=json"
-    print(url)
+    logger.debug(url)
     api = requests.get(url)
     print(api.json())
 
