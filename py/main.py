@@ -1,4 +1,3 @@
-import json
 import logging
 import logging.config
 from glob import glob
@@ -8,36 +7,19 @@ from types import SimpleNamespace
 
 from toml import dump as toml_dump
 from toml import load as toml_load
+from yaml import safe_load
 
 from src import steam
 from src.classes import Note
 
 """
-# Set up the root logger
-logger = logging.getLogger(__name__)
-# Set the root logger to the MAX level required by any handler
-logger.setLevel(logging.DEBUG)
-# Add one file handler for the debug level (as a hidden file)
-fh = logging.FileHandler(".debug.log", "w")
-fh.setLevel(logging.DEBUG)
-# Add one file handler for the proper log file
-fh2 = logging.FileHandler("log.log", "w")
-fh2.setLevel(logging.INFO)
-# Format the output lines of the log files
-formatter = logging.Formatter(
-    "%(asctime)s | %(name)-12s | %(levelname)-8s : %(message)s",
-    datefmt="%d.%m %H:%M",
-)
-# Apply those formatters to both handlers
-fh.setFormatter(formatter)
-fh2.setFormatter(formatter)
-# Add the handlers to the root logger
-logger.addHandler(fh)
-logger.addHandler(fh2)
-"""
-
-with open("src/logging.json") as f:
+with open("src/logging.json", "r") as f:
     config = json.load(f)
+pprint(config)
+"""
+with open("src/logging.yaml", "r") as f:
+    config = safe_load(f)
+
 logging.config.dictConfig(config)
 logger = logging.getLogger(__name__)
 

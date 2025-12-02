@@ -1,0 +1,32 @@
+disable_existing_loggers: false
+formatters:
+  simple:
+    format: "%(asctime)s | %(name)-12s | %(levelname)s: %(message)s"
+    datefmt: "%d.%m %H:%M"
+  standard:
+    format: "%(levelname)s - %(message)s"
+handlers:
+  std:
+    class: logging.StreamHandler
+    formatter: standard
+    level: INFO
+    stream: "ext://sys.stdout"
+  file:
+    class: logging.FileHandler
+    filename: tbd_info.log
+    formatter: simple
+    level: INFO
+    mode: w
+  file_debug:
+    class: logging.FileHandler
+    filename: tbd_debug.log
+    formatter: simple
+    level: DEBUG
+    mode: w
+root:
+  handlers:
+    - std
+    - file
+    - file_debug
+  level: DEBUG
+version: 1

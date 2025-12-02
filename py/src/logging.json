@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "simple": {
+      "format": "%(asctime)s | %(name)-12s | %(levelname)s: %(message)s"
+    }
+  },
+  "handlers": {
+    "file": {
+      "class": "logging.FileHandler",
+      "filename": "tbd_info.log",
+      "mode": "w",
+      "level": "INFO",
+      "formatter": "simple"
+    },
+    "file_debug": {
+      "class": "logging.FileHandler",
+      "filename": "tbd_debug.log",
+      "mode": "w",
+      "level": "DEBUG",
+      "formatter": "simple"
+    }
+  },
+  "root": {
+    "level": "INFO",
+    "handlers": ["file", "file_debug"]
+  }
+}
