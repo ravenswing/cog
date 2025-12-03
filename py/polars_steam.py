@@ -4,7 +4,7 @@ import polars as pl
 
 
 def main() -> None:
-    data = Path.cwd().joinpath("../steam_data/data").resolve()
+    data = Path.cwd().parent / "data"
 
     # games = pl.scan_csv(data / "games.csv", escape="\\", quote_char='"')
     # print(games.head().collect())
