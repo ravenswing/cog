@@ -1,25 +1,25 @@
 use anyhow::{bail, Context, Result};
 use serde_yaml::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Represents a single Markdown note with separated Frontmatter and Body.
 #[derive(Debug)]
 pub struct Note {
     /// Path to the file on disk
     pub path: PathBuf,
-    /// Derived from filename
+    /// Note title - derived from filename
     pub title: String,
     /// Dynamic YAML data (preserves unknown fields)
     pub frontmatter: Value,
     /// The Markdown content (everything after the second ---)
     pub body: String,
-    /// Dirty flag: true if we have made changes that need saving
+    /// Keep track of changes that need saving
     pub is_modified: bool,
 }
 
 impl Note {
-    /// LOAD: Reads a file, splits frontmatter/body, and parses YAML.
+    /// Reads a file, splits frontmatter/body, and parses YAML
     pub fn load(path: PathBuf) -> Result<Self> {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read file: {:?}", path))?;
@@ -35,26 +35,27 @@ impl Note {
         let parts: Vec<&str> = content.splitn(3, "---").collect();
 
         if parts.len() < 3 {
-            bail!("File {:?} does not appear to have valid frontmatter delimiters", path);
+            bail!(
+                "File {:?} does not appear to have valid frontmatter delimiters",
+                path
+            );
         }
 
-        let yaml_str = parts[1];
-        let body_str = parts[2].to_string();
-
-        let frontmatter: Value = serde_yaml::from_str(yaml_str)
+        let frontmatter: Value = serde_yaml::from_str(parts[1])
             .with_context(|| format!("Invalid YAML in {:?}", path))?;
 
         Ok(Note {
             path,
             title,
             frontmatter,
-            body: body_str,
+            body: parts[2].to_string(),
             is_modified: false,
         })
     }
 
     /// MODIFY: Adds a tag if missing. Consumes and returns Self.
     pub fn add_tag(mut self, new_tag: &str) -> Result<Self> {
+        // get the tags
         let tags_seq = match self.frontmatter.get_mut("tags") {
             Some(val) => val.as_sequence_mut(),
             None => {
@@ -70,7 +71,7 @@ impl Note {
                 self.is_modified = true;
             }
         } else {
-             bail!("The 'tags' field in {:?} is not a list.", self.title);
+            bail!("The 'tags' field in {:?} is not a list.", self.title);
         }
 
         Ok(self)
