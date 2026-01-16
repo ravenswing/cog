@@ -12,11 +12,6 @@ from yaml import safe_load
 from src import steam
 from src.classes import Note
 
-"""
-with open("src/logging.json", "r") as f:
-    config = json.load(f)
-pprint(config)
-"""
 with open("src/logging.yaml", "r") as f:
     config = safe_load(f)
 
@@ -53,13 +48,13 @@ def sync_note(note_path1, note_path2, last_sync_time):
     note1 = Note(note_path1)
     note2 = Note(note_path2)
     # Confirm that the names are the same
-    assert note1.name == note2.name, (
-        f"Note names do not match {note1.name} =/= {note2.name}"
-    )
+    assert (
+        note1.name == note2.name
+    ), f"Note names do not match {note1.name} =/= {note2.name}"
     # Confirm that the time modified has been found for both notes
-    assert note1._mtime is not None and note2._mtime is not None, (
-        "Need to know time modified to sync."
-    )
+    assert (
+        note1._mtime is not None and note2._mtime is not None
+    ), "Need to know time modified to sync."
 
     # If both notes were not edited since the last sync -> do nothing
     if note1._mtime < last_sync_time and note2._mtime < last_sync_time:
@@ -92,9 +87,9 @@ def intersync_vaults(vault1: str, vault2: str, last_sync_time):
             p.split("/")[-1][:-3] for p in glob(f"{v}/**/*.md") + glob(f"{v}/*.md")
         ]
 
-        assert len(check_names) == len(set(check_names)), (
-            f"Found duplicate names in {v}"
-        )
+        assert len(check_names) == len(
+            set(check_names)
+        ), f"Found duplicate names in {v}"
 
     # Load notes in each vault, with the name as the key
     vault1_notes = {
