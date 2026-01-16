@@ -1,83 +1,46 @@
-use dirs::home_dir;
-use serde::Deserialize;
-use std::fs::{File, read_to_string};
-use std::io::{BufRead, BufReader, Error, Write};
-use std::path::{Path, PathBuf};
-use toml;
+use anyhow::{bail, Result};
+use clap::Parser;
+use rayon::prelude::*;
+use std::fs;
+use std::path::PathBuf;
 
-#[derive(Deserialize)]
-pub struct Config {
-    vault: String,
-    steam_id: String,
+use note_tagger::Note;
+
+#[derive(Parser)]
+#[command(name = "note_tagger")]
+#[command(version = "1.0")]
+struct Cli {
+    #[arg(short, long)]
+    path: PathBuf,
+    #[arg(short, long)]
+    tag: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct Note {
-    pub path: PathBuf,
-    pub name: String,
-    pub content: Vec<String>,
-}
+fn main() -> Result<()> {
+    let args = Cli::parse();
 
-impl Note {
-    pub fn load(path: PathBuf) -> Result<Self, Error> {
-        assert!(&path.exists(), "Unable to load note: {}", &path.display());
-
-        let name = path.file_stem().unwrap().to_str().unwrap().to_string();
-
-        // let input = File::open(&path)?;
-        // let buffered = BufReader::new(input);
-        // let content: () = buffered.lines();
-
-        let content = read_to_string(&path)
-            .unwrap() // panic on possible file-reading errors
-            .lines() // split the string into an iterator of string slices
-            .map(String::from) // make each slice into a string
-            .collect(); // gather them together into a vector
-
-        Ok(Self {
-            path,
-            name,
-            content,
-        })
+    if !args.path.is_dir() {
+        bail!("The path provided is not a directory: {:?}", args.path);
     }
 
-    pub fn new(path: PathBuf, name: String, content: Vec<String>) -> Self {
-        Self {
-            path,
-            name,
-            content,
+    println!("Scanning {:?}...", args.path);
+
+    let paths: Vec<PathBuf> = fs::read_dir(&args.path)?
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+
+    paths.par_iter().for_each(|path| {
+        if path.extension().map_or(false, |ext| ext == "md") {
+            let result = Note::load(path.clone())
+                .and_then(|note| note.add_tag(&args.tag))
+                .and_then(|note| note.save());
+
+            if let Err(e) = result {
+                eprintln!("Skipping {:?}: {}", path.file_name().unwrap_or_default(), e);
+            }
         }
-    }
-}
+    });
 
-fn main() {
-    let home: String = home_dir()
-        .expect("Failed to retrieve home directory.")
-        .display()
-        .to_string();
-
-    let config_path = home + "/.config/rhg.toml";
-
-    let toml_str = read_to_string(config_path).expect("Failed to read Cargo.toml file");
-    let config: Config = toml::from_str(&toml_str).expect("Failed to deserialize Cargo.toml");
-
-    let vault = Path::new(&config.vault);
-
-    dbg!(&config.vault);
-
-    // let note = Note { path, name };
-    let note = Note {
-        path: PathBuf::from("./test.md"),
-        name: String::from("TEST"),
-        content: vec![String::from("new line")],
-    };
-
-    println!("{:?}", note.name);
-
-    // let path: &Path = Path::new(&note.path);
-    //
-    let second = Note::load(vault.join("test test.md")).unwrap();
-
-    dbg!(&config.vault);
-    dbg!(&second.content);
+    Ok(())
 }
