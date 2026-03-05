@@ -104,17 +104,17 @@ fn main() -> Result<()> {
     // Resolve the home directory
     let home_dir = home::home_dir().context("Could not find the home directory")?;
 
-    //Construct the path to the TOML config
+    // Construct the path to the TOML config
     let config_path = home_dir.join(".config/rhg/rhg.toml");
 
-    // 3. Read and parse the TOML file using anyhow's Context trait
+    // Read and parse the TOML file using anyhow's Context trait
     let config_contents = fs::read_to_string(&config_path)
         .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
 
     let conf: Config = toml::from_str(&config_contents)
         .context("Failed to parse TOML configuration. Please check your syntax.")?;
 
-    // 4. Resolve the vault path and run the title adder
+    // Resolve the vault path and run the title adder
     let vault = PathBuf::from(conf.work_vault);
 
     println!("Processing vault: {}", vault.display());
