@@ -1,4 +1,4 @@
-# rhg
-*Raella Han Ger* - *Song of Stone*
+# cog
+*Cân O Garreg* - *A Song of Stone*
 
-Obsidian File Management &amp; Analysis
+Obsidian File Management & Analysis
