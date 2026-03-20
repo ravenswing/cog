@@ -12,89 +12,82 @@ struct Config {
 }
 
 pub fn add_inline_title(vault: &Path) -> Result<()> {
-    // Find all the notes in the vault
-    let note_files = WalkDir::new(vault)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("md"));
-
     // Iterate through the files
-    for entry in note_files {
-        let path = entry.path();
+    let path = entry.path();
 
-        let content = fs::read_to_string(path).with_context(|| {
-            format!(
-                "{} Failed to read file: {}",
-                "Error".bold().red(),
-                path.display()
-            )
-        })?;
+    let content = fs::read_to_string(path).with_context(|| {
+        format!(
+            "{} Failed to read file: {}",
+            "Error".bold().red(),
+            path.display()
+        )
+    })?;
 
-        // Use Vec<&str> to avoid allocating new strings for every line
-        let lines: Vec<&str> = content.lines().collect();
+    // Use Vec<&str> to avoid allocating new strings for every line
+    let lines: Vec<&str> = content.lines().collect();
 
-        // Find all hlines in the file
-        let hlines: Vec<usize> = lines
-            .iter()
-            .enumerate()
-            .filter(|&(_, x)| *x == "---")
-            .map(|(i, _)| i)
-            .collect();
+    // Find all hlines in the file
+    let hlines: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|&(_, x)| *x == "---")
+        .map(|(i, _)| i)
+        .collect();
 
-        // Match hline pattern for properties header or not
-        let insert_at = if hlines.len() > 1 && hlines[0] < 3 {
-            hlines[1] + 1
-        } else {
-            0
-        };
+    // Match hline pattern for properties header or not
+    let insert_at = if hlines.len() > 1 && hlines[0] < 3 {
+        hlines[1] + 1
+    } else {
+        0
+    };
 
-        // Detect if the file already has an H1 title at that location
-        if lines.len() > insert_at && lines[insert_at].starts_with("# ") {
-            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-            println!("{} {} already has title.", "NOTE:".yellow(), stem);
-            continue;
-        }
-
-        // Remove filename annotations
+    // Detect if the file already has an H1 title at that location
+    if lines.len() > insert_at && lines[insert_at].starts_with("# ") {
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        println!("{} {} already has title.", "NOTE:".yellow(), stem);
+        // Exit early ->
+        return Ok(());
+    }
 
-        // Efficiently split using split_once instead of allocating a Vec
-        let title_base = match stem.split_once(" - ") {
-            Some((_, rest)) => rest,
-            None => &stem,
-        };
+    // Remove filename annotations
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
 
-        // Capitalize the first letter safely
-        let mut chars = title_base.chars();
-        let title = match chars.next() {
-            None => String::new(),
-            Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
-        };
+    // Efficiently split using split_once instead of allocating a Vec
+    let title_base = match stem.split_once(" - ") {
+        Some((_, rest)) => rest,
+        None => &stem,
+    };
 
-        let new_title_line = format!("# {}", title);
+    // Capitalize the first letter safely
+    let mut chars = title_base.chars();
+    let title = match chars.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+    };
 
-        // Build the new file contents efficiently
-        let mut new_content = String::with_capacity(content.len() + new_title_line.len() + 2);
+    let new_title_line = format!("# {}", title);
 
-        for (i, line) in lines.iter().enumerate() {
-            if i == insert_at {
-                new_content.push_str(&new_title_line);
-                new_content.push('\n');
-            }
-            new_content.push_str(line);
-            new_content.push('\n');
-        }
+    // Build the new file contents efficiently
+    let mut new_content = String::with_capacity(content.len() + new_title_line.len() + 2);
 
-        // Handle edge case where we insert at the end of an empty file
-        if lines.is_empty() && insert_at == 0 {
+    for (i, line) in lines.iter().enumerate() {
+        if i == insert_at {
             new_content.push_str(&new_title_line);
             new_content.push('\n');
         }
-
-        // Add context to the write operation as well
-        fs::write(path, new_content)
-            .with_context(|| format!("Failed to write to file: {}", path.display()))?;
+        new_content.push_str(line);
+        new_content.push('\n');
     }
+
+    // Handle edge case where we insert at the end of an empty file
+    if lines.is_empty() && insert_at == 0 {
+        new_content.push_str(&new_title_line);
+        new_content.push('\n');
+    }
+
+    // Add context to the write operation as well
+    fs::write(path, new_content)
+        .with_context(|| format!("Failed to write to file: {}", path.display()))?;
 
     Ok(())
 }
@@ -118,7 +111,16 @@ fn main() -> Result<()> {
     let vault = PathBuf::from(conf.work_vault);
 
     println!("Processing vault: {}", vault.display());
-    add_inline_title(&vault)?;
+    // Find all the notes in the vault
+    let note_files = WalkDir::new(vault)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("md"));
+
+    for entry in note_files {
+        add_inline_title(&vault)?;
+    }
+
     println!("Finished processing.");
 
     Ok(())
