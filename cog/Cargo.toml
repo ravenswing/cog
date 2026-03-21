@@ -13,6 +13,8 @@ home = "0.5.12"
 walkdir = "2.5.0"
 toml = "1.0.3"
 colored = "3.1.1"
+glob = "0.3.3"
+regex = "1.12.3"
 
 [dev-dependencies]
 tempfile = "3" # Essential for safely testing file I/O
