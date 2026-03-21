@@ -14,13 +14,13 @@ use walkdir::WalkDir;
 struct Config {
     vault: String,
     work_vault: String,
-    api_file: String,
-    steam_id: u64,
-    steam_user: String,
-    friend_id: u64,
+    // api_file: String,
+    // steam_id: u64,
+    // steam_user: String,
+    // friend_id: u64,
 }
 
-pub fn add_inline_title(note: &Path) -> Result<()> {
+fn add_inline_title(note: &Path) -> Result<()> {
     let content = fs::read_to_string(note).with_context(|| {
         format!(
             "{} Failed to read file: {}",
@@ -174,20 +174,47 @@ fn get_tags(note: &Path) -> Option<Vec<String>> {
     Some(tag_vec)
 }
 
-fn organise_by_tag(vault: &Path, tag: &str) -> Result<()> {
-    let tag_dir = vault.join(tag);
+fn note_has_tag(note: &Path, tag: &str) -> Option<PathBuf> {
+    match get_tags(note) {
+        Some(v) => {
+            if v.contains(&tag.to_string()) {
+                Some(note.to_owned())
+            } else {
+                None
+            }
+        }
+        None => None,
+    }
+}
+
+fn organise_by_tag(vault: &Path, tag: &str, dir_name: Option<&str>) -> Result<()> {
+    // Set directory name from input or just the tag name
+    let tag_dir = vault.join(dir_name.unwrap_or(tag));
+    println!(
+        "Organising notes tagged {:?} into directory {:?}",
+        &tag, &tag_dir
+    );
+    // Create the directory if it doesn't exits
     if !tag_dir.exists() {
         fs::create_dir(&tag_dir)
             .with_context(|| format!("Unable to make directory at: {}", tag_dir.display()))?;
     }
-    for note in fs::read_dir(vault)?
+
+    // Get tagged notes in the *root* vault only
+    let notes: Vec<_> = fs::read_dir(vault)?
+        // from all the files, only get those that are valid files (and unwrap)
         .filter_map(Result::ok)
+        // only get those that have the extension .md
         .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("md"))
-    {
-        match get_tags(&note.path()) {
-            Some(tags) => println!("{:?}", tags),
-            None => (),
-        }
+        // only get those that have the tag
+        .filter_map(|note| note_has_tag(&note.path(), tag))
+        .collect();
+
+    // Move all the tagged notes into the correct folder
+    for note in notes {
+        let new_path = &tag_dir.join(&note.file_name().unwrap());
+        println!("  Moving {:?} -> {:?}", &note, &new_path);
+        fs::rename(&note, new_path)?;
     }
 
     Ok(())
@@ -206,19 +233,19 @@ fn process_vault(vault: &Path) -> Result<()> {
         // add_inline_title(entry.path())?;
     }
 
-    organise_by_tag(vault, "game")?;
+    organise_by_tag(vault, "game", Some("games"))?;
 
     println!("Finished processing.");
     Ok(())
 }
 
-// anyhow::Result<()> - catches errors withouth horrible types!
+// anyhow::Result<()> - catches errors without horrible types!
 fn main() -> Result<()> {
     // Resolve the home directory
     let home_dir = home::home_dir().context("Could not find the home directory")?;
 
     // Construct the path to the TOML config
-    let config_path = home_dir.join(".config/rhg/rhg.toml");
+    let config_path = home_dir.join(".config/rhg.toml");
 
     // Read and parse the TOML file using anyhow's Context trait
     let config_contents = fs::read_to_string(&config_path)
