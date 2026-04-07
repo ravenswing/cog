@@ -1,20 +1,27 @@
 import logging
 import logging.config
-from pathlib import Path
 from tomllib import load
 
-with open("src/cogpy/utils/logging.toml", "rb") as f:
-    config = load(f)
-logging.config.dictConfig(config)
-logger = logging.getLogger(__name__)
+from rich import print
 
-logger.info("Info message from main")
-logger.info("IN BOTH FILES")
-logger.debug(Path.cwd())
+from cogpy.core.models import Vault
+from cogpy.utils import load_config
+
+log_config = load(open("src/cogpy/utils/logging.toml", "rb"))
+logging.config.dictConfig(log_config)
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    logger.info("WORKING")
+    print("[bold bright_blue]Starting COG[/bold bright_blue]...")
+    logger.info(" ========== Starting COG ========== ")
+
+    config = load_config()
+
+    main = Vault(path=config["vaults"]["main"])
+    work = Vault(path=config["vaults"]["work"])
+
+    work.sync_to(main)
 
 
 if __name__ == "__main__":
