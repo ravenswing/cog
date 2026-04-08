@@ -125,16 +125,18 @@ class GameNote(Note):
     steam_reviews: SteamReviews
 
 
-def sync_unidirectional(dest: Vault, src: Vault, back_update: bool = False) -> None:
+def sync_unidirectional(src: Vault, dest: Vault, back_update: bool = False) -> None:
     src_notes = src.get_relative_paths()
     dest_notes = dest.get_relative_paths()
 
+    # TODO! move this out side or into config
     exclude_dirs = ["meetings", "projects", "people"]
+    exclude_tags = ["nbd", "no-sync", "client"]
+
     # Filter out excluded directories:
     src_notes = [p for p in src_notes if p.parent.name not in exclude_dirs]
 
-    exclude_tags = ["nbd", "no-sync", "client"]
-    # Notes in the left vault with no counterparts in the right
+    # Notes in the left vault with no counterparts in the right = just copy
     notes_to_copy = set(src_notes) - set(dest_notes)
     for p in notes_to_copy:
         left_note = Note.from_md(src.path / p)
@@ -161,23 +163,33 @@ def sync_unidirectional(dest: Vault, src: Vault, back_update: bool = False) -> N
             continue
 
         match left_note.mtime, right_note.mtime:
+            # Both notes not updated since last sync = no changes to sync
             case l, r if l < last_sync and r < last_sync:
                 logger.info(f'NO CHANGES - skipping "{p}"')
                 continue
+            # Both notes updated = potential conflict, save to report later
             case l, r if l > last_sync and r > last_sync:
                 conflicts.append(f"{left_note.path}  <->  {right_note.path}")
                 continue
+            # Right modified = only change if back-updating
             case l, r if l < r:
-                logger.info(f'Right modified after left - skipping "{p}"')
-                continue
+                if back_update:
+                    print(
+                        f'[bold orange]Back-updating[/bold orange] - "{right_note.path}" -> "{left_note.path}"'
+                    )
+                    right_note.path.copy_into(src.path)
+                else:
+                    logger.info(f'Right modified after left - skipping "{p}"')
+                    continue
+            # Left modified = update
             case l, r if l > r:
                 print(
                     f'[bold bright_green]Syncing[/bold bright_green] - "{left_note.path}" -> "{right_note.path}"'
                 )
                 left_note.path.copy_into(dest.path)
             case _:
-                raise ValueError("Unwelcome time pattern")
-
+                raise ValueError("Unexpected time pattern")
+    # Collates the paths for which there was a "conflict" - both updates since sync.
     if conflicts:
         print(
             "[bold bright_red]WARNING[/bold bright_red] - conflicts detected, check the log file!"
@@ -185,5 +197,5 @@ def sync_unidirectional(dest: Vault, src: Vault, back_update: bool = False) -> N
         logger.warning(
             f"Conflicts were found - both files were updated since last sync: {'\n'.join(conflicts)}"
         )
-
+    # Update the saved time for the last sync
     update_last_sync()
