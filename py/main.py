@@ -21,7 +21,7 @@ def main() -> None:
     main = Vault(path=config["vaults"]["main"])
     work = Vault(path=config["vaults"]["work"])
 
-    work.sync_to(main)
+    work.sync_to(main, back_update=True)
 
 
 if __name__ == "__main__":

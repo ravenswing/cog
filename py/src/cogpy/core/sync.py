@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from time import time
+from time import sleep, time
 from tomllib import load
 
 from tomli_w import dump
@@ -15,4 +15,5 @@ def get_last_sync(toml: Path = INFO_PATH) -> float:
 
 
 def update_last_sync(timestamp: float = time(), toml: Path = INFO_PATH) -> None:
+    sleep(0.5)
     dump({"last_sync": timestamp}, toml.open("wb"))
