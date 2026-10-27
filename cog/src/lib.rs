@@ -5,6 +5,7 @@ pub mod error;
 pub mod fsutil;
 pub mod note;
 pub mod organise;
+pub mod report;
 pub mod state;
 #[cfg(feature = "steam")]
 pub mod steam;

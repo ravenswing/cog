@@ -19,6 +19,7 @@ use crate::config::SyncConfig;
 use crate::error::{Error, IoContext, Result};
 use crate::fsutil::copy_preserving_mtime;
 use crate::note::Note;
+use crate::report::Report;
 use crate::tags::Tag;
 use crate::vault::{NotePath, Vault};
 
@@ -109,24 +110,48 @@ pub struct SyncPlan {
 }
 
 impl SyncPlan {
-    /// Notes with the given action.
-    pub fn with<'a>(&'a self, action: &'a Action) -> impl Iterator<Item = &'a NotePath> {
-        self.notes
-            .iter()
-            .filter(move |n| &n.action == action)
-            .map(|n| &n.path)
+    /// How many notes have each action, and how many failed.
+    pub fn summary(&self) -> Summary {
+        let summary = Summary {
+            errors: self.errors.len(),
+            ..Summary::default()
+        };
+        self.notes.iter().fold(summary, |mut summary, note| {
+            match note.action {
+                Action::Create => summary.created += 1,
+                Action::Update => summary.updated += 1,
+                Action::BackUpdate => summary.back_updated += 1,
+                Action::Conflict => summary.conflicts += 1,
+                Action::Skip(_) => summary.skipped += 1,
+            }
+            summary
+        })
     }
+}
 
-    pub fn count(&self, action: &Action) -> usize {
-        self.with(action).count()
-    }
+/// Counts of what a sync did, or would do.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Summary {
+    pub created: usize,
+    pub updated: usize,
+    pub back_updated: usize,
+    pub conflicts: usize,
+    pub skipped: usize,
+    pub errors: usize,
+}
 
-    /// Notes that will be skipped, for any reason.
-    pub fn skipped(&self) -> usize {
-        self.notes
-            .iter()
-            .filter(|n| matches!(n.action, Action::Skip(_)))
-            .count()
+impl fmt::Display for Summary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} created, {} updated, {} back-updated, {} conflicts, {} skipped, {} errors",
+            self.created,
+            self.updated,
+            self.back_updated,
+            self.conflicts,
+            self.skipped,
+            self.errors
+        )
     }
 }
 
@@ -153,24 +178,16 @@ pub fn plan_sync(
         back_update,
     };
 
-    let results: Vec<_> = src_paths
+    let Report {
+        done: notes,
+        errors,
+    } = src_paths
         .into_par_iter()
         .map(|path| {
             let action = planner.plan(&path, dest_paths.contains(&path))?;
             Ok(Planned { path, action })
         })
         .collect();
-
-    let (notes, errors) = results.into_iter().fold(
-        (Vec::new(), Vec::new()),
-        |(mut notes, mut errors), result| {
-            match result {
-                Ok(planned) => notes.push(planned),
-                Err(e) => errors.push(e),
-            }
-            (notes, errors)
-        },
-    );
     Ok(SyncPlan {
         started,
         notes,
@@ -265,6 +282,29 @@ pub fn apply(plan: &SyncPlan, src: &Vault, dest: &Vault) -> Vec<Error> {
 mod tests {
     use super::*;
     use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn summary_counts_each_action_once() {
+        let planned = |name: &str, action| Planned {
+            path: NotePath::new(name),
+            action,
+        };
+        let plan = SyncPlan {
+            started: UNIX_EPOCH,
+            notes: vec![
+                planned("a.md", Action::Create),
+                planned("b.md", Action::Create),
+                planned("c.md", Action::Conflict),
+                planned("d.md", Action::Skip(SkipReason::Unchanged)),
+                planned("e.md", Action::Skip(SkipReason::ExcludedDir)),
+            ],
+            errors: Vec::new(),
+        };
+        assert_eq!(
+            plan.summary().to_string(),
+            "2 created, 0 updated, 0 back-updated, 1 conflicts, 2 skipped, 0 errors"
+        );
+    }
 
     #[test]
     fn change_against_last_sync() {

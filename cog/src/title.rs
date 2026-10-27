@@ -7,25 +7,20 @@ use std::path::Path;
 use crate::error::{Error, IoContext, Result};
 use crate::fsutil::write_atomic;
 use crate::note::{Split, split_frontmatter};
+use crate::report::Report;
 use crate::vault::{NotePath, Vault};
-
-/// The outcome of titling a whole vault.
-#[derive(Debug, Default)]
-pub struct TitleReport {
-    /// Notes that were given a title.
-    pub added: Vec<NotePath>,
-    pub errors: Vec<Error>,
-}
 
 /// Titles every untitled note in `vault`, or only reports them if `dry_run`.
 ///
+/// Returns the notes that were, or would be, given a title.
+///
 /// Excalidraw drawings, stored as `.excalidraw.md`, are left alone.
-pub fn add_titles(vault: &Vault, skip_dirs: &[String], dry_run: bool) -> Result<TitleReport> {
+pub fn add_titles(vault: &Vault, skip_dirs: &[String], dry_run: bool) -> Result<Report<NotePath>> {
     let paths: Vec<NotePath> = vault
         .notes(skip_dirs)
         .filter(|path| !path.as_ref().is_ok_and(is_drawing))
         .collect::<Result<_>>()?;
-    let results: Vec<_> = paths
+    Ok(paths
         .into_par_iter()
         .map(|path| {
             let full = vault.resolve(&path);
@@ -38,17 +33,8 @@ pub fn add_titles(vault: &Vault, skip_dirs: &[String], dry_run: bool) -> Result<
             }
             Ok(Some(path))
         })
-        .collect();
-
-    let mut report = TitleReport::default();
-    for result in results {
-        match result {
-            Ok(Some(path)) => report.added.push(path),
-            Ok(None) => {}
-            Err(e) => report.errors.push(e),
-        }
-    }
-    Ok(report)
+        .filter_map(Result::transpose)
+        .collect())
 }
 
 /// Excalidraw drawings are stored as Markdown, but aren't notes to title.
@@ -140,7 +126,7 @@ mod tests {
         let vault = Vault::open(dir.path()).unwrap();
         let report = add_titles(&vault, &[], false).unwrap();
 
-        assert_eq!(report.added, [NotePath::new("a.md")]);
+        assert_eq!(report.done, [NotePath::new("a.md")]);
         assert_eq!(
             fs::read_to_string(dir.path().join("b.excalidraw.md")).unwrap(),
             ""

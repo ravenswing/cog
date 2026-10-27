@@ -11,7 +11,7 @@ use tracing_subscriber::prelude::*;
 use cog::config::Config;
 use cog::organise::organise_by_tag;
 use cog::state;
-use cog::sync::{Action, apply, plan_sync};
+use cog::sync::{Action, Summary, apply, plan_sync};
 use cog::tags::Tag;
 use cog::title::add_titles;
 use cog::vault::Vault;
@@ -150,7 +150,7 @@ fn title(config: &Config, vault: VaultName, dry_run: bool) -> Result<ExitCode> {
     } else {
         "added title"
     };
-    for path in &report.added {
+    for path in &report.done {
         tracing::info!("{verb}: {path}");
     }
     for e in &report.errors {
@@ -159,10 +159,10 @@ fn title(config: &Config, vault: VaultName, dry_run: bool) -> Result<ExitCode> {
     println!(
         "{}{} titles added, {} errors",
         if dry_run { "Dry run: " } else { "" },
-        report.added.len(),
+        report.done.len(),
         report.errors.len()
     );
-    Ok(exit_code(report.errors.is_empty()))
+    Ok(exit_code(!report.has_errors()))
 }
 
 fn organise(
@@ -254,21 +254,16 @@ fn sync(config: &Config, dry_run: bool, back_update: bool) -> Result<ExitCode> {
         tracing::error!("{}", chain(e));
     }
 
-    println!(
-        "{}{} created, {} updated, {} back-updated, {} conflicts, {} skipped, {} errors",
-        if dry_run { "Dry run: " } else { "" },
-        plan.count(&Action::Create),
-        plan.count(&Action::Update),
-        plan.count(&Action::BackUpdate),
-        plan.count(&Action::Conflict),
-        plan.skipped(),
-        plan.errors.len() + apply_errors.len(),
-    );
-    if plan.count(&Action::Conflict) > 0 {
+    let summary = Summary {
+        errors: plan.errors.len() + apply_errors.len(),
+        ..plan.summary()
+    };
+    println!("{}{summary}", if dry_run { "Dry run: " } else { "" });
+    if summary.conflicts > 0 {
         println!("Conflicts were changed in both vaults and need merging by hand.");
     }
 
-    Ok(exit_code(plan.errors.is_empty() && apply_errors.is_empty()))
+    Ok(exit_code(summary.errors == 0))
 }
 
 /// Formats an error with each of its causes.

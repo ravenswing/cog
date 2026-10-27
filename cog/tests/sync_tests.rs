@@ -98,7 +98,7 @@ fn creates_new_notes_and_second_run_does_nothing() {
     assert_eq!(mtime(&f.dest, "a.md"), mtime(&f.src, "a.md"));
 
     let plan = f.sync();
-    assert_eq!(plan.skipped(), plan.notes.len());
+    assert_eq!(plan.summary().skipped, plan.notes.len());
     assert!(plan.errors.is_empty());
 }
 
