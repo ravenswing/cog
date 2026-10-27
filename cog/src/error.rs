@@ -48,6 +48,9 @@ pub enum Error {
     #[error("{path} has a name that isn't valid UTF-8")]
     NonUtf8Name { path: PathBuf },
 
+    #[error("vaults {src} and {dest} are the same, or one is inside the other")]
+    OverlappingVaults { src: PathBuf, dest: PathBuf },
+
     #[error("{path} is not a directory")]
     NotADirectory { path: PathBuf },
 

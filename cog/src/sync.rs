@@ -174,8 +174,9 @@ impl fmt::Display for Summary {
 
 /// Works out what syncing `src` into `dest` would do.
 ///
-/// Fails only if the source vault can't be walked. Notes that can't be read
-/// are collected in [`SyncPlan::errors`] and left out of the plan.
+/// Fails if the vaults overlap, or the source vault can't be walked. Notes
+/// that can't be read are collected in [`SyncPlan::errors`] and left out of
+/// the plan.
 pub fn plan_sync(
     src: &Vault,
     dest: &Vault,
@@ -183,6 +184,7 @@ pub fn plan_sync(
     config: &SyncConfig,
     back_update: bool,
 ) -> Result<SyncPlan> {
+    check_separate(src, dest)?;
     let started = SystemTime::now();
     let src_paths: Vec<NotePath> = src.notes(&config.skip_dirs).collect::<Result<_>>()?;
 
@@ -258,6 +260,19 @@ impl Planner<'_> {
     }
 }
 
+/// Fails if `src` and `dest` are the same directory, or one is inside the
+/// other, which would copy notes back into the vault they came from.
+///
+/// Both roots are resolved first, so a symlink or `..` can't hide an overlap.
+fn check_separate(src: &Vault, dest: &Vault) -> Result<()> {
+    let resolve = |vault: &Vault| fs::canonicalize(vault.root()).ctx("resolve", vault.root());
+    let (src, dest) = (resolve(src)?, resolve(dest)?);
+    if src.starts_with(&dest) || dest.starts_with(&src) {
+        return Err(Error::OverlappingVaults { src, dest });
+    }
+    Ok(())
+}
+
 fn mtime(path: &Path) -> Result<SystemTime> {
     fs::metadata(path)
         .and_then(|m| m.modified())
@@ -312,6 +327,27 @@ pub fn apply(plan: SyncPlan, src: &Vault, dest: &Vault) -> SyncPlan {
 mod tests {
     use super::*;
     use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn rejects_overlapping_vaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for sub in ["a/inner", "b"] {
+            fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        let vault = |path: &str| Vault::open(root.join(path)).unwrap();
+
+        for (src, dest) in [("a", "a/inner"), ("a/inner", "a"), ("a", "a/inner/..")] {
+            assert!(
+                matches!(
+                    check_separate(&vault(src), &vault(dest)),
+                    Err(Error::OverlappingVaults { .. })
+                ),
+                "{src} {dest}"
+            );
+        }
+        check_separate(&vault("a"), &vault("b")).unwrap();
+    }
 
     #[test]
     fn summary_counts_each_action_once() {
