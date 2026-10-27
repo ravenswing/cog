@@ -1,5 +1,6 @@
 //! Moving tagged notes into their own directory.
 
+use rayon::prelude::*;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
@@ -65,7 +66,7 @@ pub fn plan_moves(vault: &Vault, tag: &Tag, dir_name: Option<&str>) -> Result<Or
     names.sort();
 
     let Report { done, errors } = names
-        .iter()
+        .par_iter()
         .map(|name| place(vault, tag, dir, name))
         .filter_map(Result::transpose)
         .collect();
