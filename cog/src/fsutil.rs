@@ -13,11 +13,13 @@ use crate::error::{IoContext, Result};
 
 /// Writes `contents` to `path`, keeping the permissions of any file it replaces.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
-    let mut tmp = temp_beside(path)?;
+    let permissions = fs::metadata(path).ok().map(|meta| meta.permissions());
+    let mut tmp = temp_beside(path, permissions.clone())?;
     tmp.write_all(contents).ctx("write", tmp.path())?;
-    if let Ok(meta) = fs::metadata(path) {
+    // The umask may have narrowed the mode the temp file was created with
+    if let Some(permissions) = permissions {
         tmp.as_file()
-            .set_permissions(meta.permissions())
+            .set_permissions(permissions)
             .ctx("set permissions on", tmp.path())?;
     }
     persist(tmp, path)
@@ -29,7 +31,7 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
 /// would look modified on the next run.
 pub fn copy_preserving_mtime(src: &Path, dest: &Path) -> Result<()> {
     let meta = fs::metadata(src).ctx("read metadata of", src)?;
-    let tmp = temp_beside(dest)?;
+    let tmp = temp_beside(dest, Some(meta.permissions()))?;
     fs::copy(src, tmp.path()).ctx("copy to", tmp.path())?;
     filetime::set_file_times(
         tmp.path(),
@@ -44,7 +46,12 @@ pub fn copy_preserving_mtime(src: &Path, dest: &Path) -> Result<()> {
 ///
 /// The temp file is deleted when dropped, so an error part way through a
 /// write never leaves one behind.
-fn temp_beside(path: &Path) -> Result<NamedTempFile> {
+///
+/// It is created with `permissions`, before anything is written to it, so
+/// its contents are never readable by more users than the file it replaces.
+/// Without them the mode is left to the umask, as `fs::write` does, rather
+/// than tempfile's 0600.
+fn temp_beside(path: &Path, permissions: Option<fs::Permissions>) -> Result<NamedTempFile> {
     let parent = path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(parent).ctx("create directory", parent)?;
     let prefix = format!(
@@ -54,11 +61,13 @@ fn temp_beside(path: &Path) -> Result<NamedTempFile> {
 
     let mut builder = tempfile::Builder::new();
     builder.prefix(&prefix).suffix(".cog-tmp");
-    // Leave the mode to the umask, as `fs::write` does, rather than 0600
     #[cfg(unix)]
-    {
+    let permissions = {
         use std::os::unix::fs::PermissionsExt;
-        builder.permissions(fs::Permissions::from_mode(0o666));
+        permissions.or(Some(fs::Permissions::from_mode(0o666)))
+    };
+    if let Some(permissions) = permissions {
+        builder.permissions(permissions);
     }
     builder
         .tempfile_in(parent)
@@ -117,6 +126,17 @@ mod tests {
         fs::write(dir.path().join("reference.md"), "").unwrap();
         write_atomic(&dir.path().join("a.md"), b"").unwrap();
         assert_eq!(mode("a.md"), mode("reference.md"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temp_file_is_created_with_the_given_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let private = fs::Permissions::from_mode(0o600);
+        let tmp = temp_beside(&dir.path().join("a.md"), Some(private)).unwrap();
+        let mode = tmp.as_file().metadata().unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]
