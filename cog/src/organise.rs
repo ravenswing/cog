@@ -11,7 +11,7 @@ use crate::error::{Error, IoContext, Result};
 use crate::note::load_tags;
 use crate::report::Report;
 use crate::tags::Tag;
-use crate::vault::{NotePath, Vault};
+use crate::vault::{NotePath, Vault, is_hidden};
 
 /// Moving one note into the tag's directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +63,7 @@ pub fn plan_moves(vault: &Vault, tag: &Tag, dir_name: Option<&str>) -> Result<Or
         .into_iter()
         .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
         .filter_map(|path| path.file_name().map(OsStr::to_owned))
+        .filter(|name| !is_hidden(name))
         .collect();
     names.sort();
 
