@@ -82,7 +82,9 @@ impl Fixture {
 }
 
 fn ago(mins: u64) -> SystemTime {
-    SystemTime::now() - Duration::from_secs(mins * 60)
+    SystemTime::now()
+        .checked_sub(Duration::from_mins(mins))
+        .unwrap()
 }
 
 fn read(vault: &Vault, path: &str) -> String {

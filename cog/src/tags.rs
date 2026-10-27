@@ -16,8 +16,16 @@ use std::sync::LazyLock;
 /// How many lines of the body are searched for inline tags.
 const INLINE_TAG_LINES: usize = 15;
 
+#[expect(
+    clippy::expect_used,
+    reason = "the pattern is a constant, and any use in the tests compiles it"
+)]
 static WIKILINK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)\[\[.*?\]\]").expect("valid regex"));
+#[expect(
+    clippy::expect_used,
+    reason = "the pattern is a constant, and any use in the tests compiles it"
+)]
 static INLINE_TAG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:^|\s)#[\p{L}\p{N}_/-]+").expect("valid regex"));
 

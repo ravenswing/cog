@@ -124,6 +124,10 @@ impl SyncPlan {
     }
 
     /// How many notes have each action, and how many failed.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "each count is at most the number of notes"
+    )]
     pub fn summary(&self) -> Summary {
         let summary = Summary {
             errors: self.errors.len(),

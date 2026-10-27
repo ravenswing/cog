@@ -114,18 +114,18 @@ pub fn split_frontmatter(content: &str) -> Option<Split<'_>> {
     };
 
     let rest = content.strip_prefix(opening)?;
-    let mut frontmatter_len = 0;
+    // Everything from the current line on
+    let mut closing = rest;
     for line in rest.split_inclusive('\n') {
         if line.trim() == "---" {
-            let (frontmatter, closing) = rest.split_at_checked(frontmatter_len)?;
             let body = closing.strip_prefix(line)?;
             return Some(Split {
                 header: content.strip_suffix(body)?,
-                frontmatter: Some(frontmatter),
+                frontmatter: Some(rest.strip_suffix(closing)?),
                 body,
             });
         }
-        frontmatter_len += line.len();
+        closing = closing.strip_prefix(line)?;
     }
     None
 }
