@@ -42,14 +42,21 @@ pub fn read_last_sync(path: &Path) -> Result<SystemTime> {
         path: path.to_owned(),
         source,
     })?;
-    Ok(UNIX_EPOCH + Duration::from_secs_f64(state.last_sync.max(0.0)))
+    // The value is all the error needs to say what's wrong with it
+    Duration::try_from_secs_f64(state.last_sync)
+        .ok()
+        .and_then(|since| UNIX_EPOCH.checked_add(since))
+        .ok_or_else(|| Error::LastSync {
+            path: path.to_owned(),
+            value: state.last_sync,
+        })
 }
 
 /// Records `time` as the last sync time.
 pub fn write_last_sync(path: &Path, time: SystemTime) -> Result<()> {
     let last_sync = time
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+        .map_err(Error::Clock)?
         .as_secs_f64();
     let contents = toml::to_string(&StateFile { last_sync }).map_err(Error::StateEncode)?;
     write_atomic(path, contents.as_bytes())
@@ -73,6 +80,28 @@ mod tests {
         fs::write(&path, "last_sync = 1790753828.5\n").unwrap();
         let time = read_last_sync(&path).unwrap();
         assert_eq!(time, UNIX_EPOCH + Duration::from_secs_f64(1790753828.5));
+    }
+
+    #[test]
+    fn rejects_times_that_are_not_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("info.toml");
+        for value in ["inf", "nan", "-1.0", "1e300"] {
+            fs::write(&path, format!("last_sync = {value}\n")).unwrap();
+            assert!(
+                matches!(read_last_sync(&path), Err(Error::LastSync { .. })),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_to_record_times_before_1970() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("info.toml");
+        let time = UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap();
+        assert!(matches!(write_last_sync(&path, time), Err(Error::Clock(_))));
+        assert!(!path.exists());
     }
 
     #[test]

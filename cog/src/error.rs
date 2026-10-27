@@ -26,8 +26,14 @@ pub enum Error {
         source: toml::de::Error,
     },
 
+    #[error("invalid last sync time {value} in {path}")]
+    LastSync { path: PathBuf, value: f64 },
+
     #[error("failed to encode the state file")]
     StateEncode(#[source] toml::ser::Error),
+
+    #[error("the system clock is set before 1970")]
+    Clock(#[source] std::time::SystemTimeError),
 
     #[error("frontmatter in {path} has no closing `---`")]
     UnclosedFrontmatter { path: PathBuf },
