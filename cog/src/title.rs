@@ -1,77 +1,150 @@
-use anyhow::{Context, Result};
+//! Adding an H1 title to notes that lack one.
+
+use rayon::prelude::*;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// Adds an H1 title based on the filename to a note without one.
-pub fn add_inline_title(note: &Path) -> Result<()> {
-    let content = fs::read_to_string(note)
-        .with_context(|| format!("Failed to read file: {}", note.display()))?;
+use crate::error::{Error, IoContext, Result};
+use crate::fsutil::write_atomic;
+use crate::note::split_frontmatter;
+use crate::vault::Vault;
 
-    // Use Vec<&str> to avoid allocating new strings for every line
-    let lines: Vec<&str> = content.lines().collect();
+/// The outcome of titling a whole vault.
+#[derive(Debug, Default)]
+pub struct TitleReport {
+    /// Notes that were given a title, relative to the vault root.
+    pub added: Vec<PathBuf>,
+    pub errors: Vec<Error>,
+}
 
-    // Find all hlines in the file
-    let hlines: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|&(_, x)| *x == "---")
-        .map(|(i, _)| i)
+/// Titles every untitled note in `vault`, or only reports them if `dry_run`.
+///
+/// Excalidraw drawings, stored as `.excalidraw.md`, are left alone.
+pub fn add_titles(vault: &Vault, skip_dirs: &[String], dry_run: bool) -> Result<TitleReport> {
+    let paths: Vec<PathBuf> = vault
+        .note_paths(skip_dirs)?
+        .into_iter()
+        .filter(|path| !path.to_string_lossy().ends_with(".excalidraw.md"))
+        .collect();
+    let results: Vec<_> = paths
+        .into_par_iter()
+        .map(|path| {
+            let full = vault.root().join(&path);
+            let content = fs::read_to_string(&full).ctx("read", &full)?;
+            let Some(titled) = with_title(&full, &content)? else {
+                return Ok(None);
+            };
+            if !dry_run {
+                write_atomic(&full, titled.as_bytes())?;
+            }
+            Ok(Some(path))
+        })
         .collect();
 
-    // Match hline pattern for properties header or not
-    let insert_at = if hlines.len() > 1 && hlines[0] < 3 {
-        hlines[1] + 1
-    } else {
-        0
-    };
-
-    // Detect if the file already has an H1 title at that location
-    if lines.len() > insert_at && lines[insert_at].starts_with("# ") {
-        let stem = note.file_stem().unwrap_or_default().to_string_lossy();
-        tracing::info!("{} already has title.", stem);
-        // Exit early ->
-        return Ok(());
-    }
-
-    // Remove filename annotations
-    let stem = note.file_stem().unwrap_or_default().to_string_lossy();
-
-    // Efficiently split using split_once instead of allocating a Vec
-    let title_base = match stem.split_once(" - ") {
-        Some((_, rest)) => rest,
-        None => &stem,
-    };
-
-    // Capitalize the first letter safely
-    let mut chars = title_base.chars();
-    let title = match chars.next() {
-        None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
-    };
-
-    let new_title_line = format!("# {}", title);
-
-    // Build the new file contents efficiently
-    let mut new_content = String::with_capacity(content.len() + new_title_line.len() + 2);
-
-    for (i, line) in lines.iter().enumerate() {
-        if i == insert_at {
-            new_content.push_str(&new_title_line);
-            new_content.push('\n');
+    let mut report = TitleReport::default();
+    for result in results {
+        match result {
+            Ok(Some(path)) => report.added.push(path),
+            Ok(None) => {}
+            Err(e) => report.errors.push(e),
         }
-        new_content.push_str(line);
-        new_content.push('\n');
+    }
+    Ok(report)
+}
+
+/// Returns `content` with a title inserted after the frontmatter, or `None`
+/// if the body already starts with an H1.
+///
+/// The title is the file stem without any `prefix - ` annotation, with its
+/// first letter capitalised.
+pub fn with_title(path: &Path, content: &str) -> Result<Option<String>> {
+    let (_, body) = split_frontmatter(content).ok_or_else(|| Error::UnclosedFrontmatter {
+        path: path.to_owned(),
+    })?;
+
+    let first_line = body.lines().find(|line| !line.trim().is_empty());
+    if first_line.is_some_and(|line| line.starts_with("# ")) {
+        return Ok(None);
     }
 
-    // Handle edge case where we insert at the end of an empty file
-    if lines.is_empty() && insert_at == 0 {
-        new_content.push_str(&new_title_line);
-        new_content.push('\n');
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let base = stem.split_once(" - ").map_or(&*stem, |(_, rest)| rest);
+    let mut chars = base.chars();
+    let title: String = chars
+        .next()
+        .into_iter()
+        .flat_map(char::to_uppercase)
+        .chain(chars)
+        .collect();
+
+    let header = &content[..content.len() - body.len()];
+    Ok(Some(format!("{header}# {title}\n{body}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn titled(name: &str, content: &str) -> Option<String> {
+        with_title(Path::new(name), content).unwrap()
     }
 
-    // Add context to the write operation as well
-    fs::write(note, new_content)
-        .with_context(|| format!("Failed to write to file: {}", note.display()))?;
+    #[test]
+    fn inserts_after_frontmatter() {
+        assert_eq!(
+            titled("note.md", "---\na: 1\n---\nbody\n").unwrap(),
+            "---\na: 1\n---\n# Note\nbody\n"
+        );
+    }
 
-    Ok(())
+    #[test]
+    fn inserts_at_top_without_frontmatter() {
+        assert_eq!(titled("note.md", "body").unwrap(), "# Note\nbody");
+        assert_eq!(titled("note.md", "").unwrap(), "# Note\n");
+    }
+
+    #[test]
+    fn strips_prefix_and_capitalises_first_letter_only() {
+        assert_eq!(titled("python - uv.md", "").unwrap(), "# Uv\n");
+        assert_eq!(
+            titled("nbd - MCS-PELE notes.md", "").unwrap(),
+            "# MCS-PELE notes\n"
+        );
+        assert_eq!(titled("a - b - c.md", "").unwrap(), "# B - c\n");
+    }
+
+    #[test]
+    fn leaves_titled_notes_alone() {
+        assert_eq!(titled("note.md", "# Existing\nbody"), None);
+        assert_eq!(titled("note.md", "---\na: 1\n---\n\n# Existing\n"), None);
+    }
+
+    #[test]
+    fn keeps_line_endings() {
+        assert_eq!(
+            titled("note.md", "---\r\na: 1\r\n---\r\nbody\r\n").unwrap(),
+            "---\r\na: 1\r\n---\r\n# Note\nbody\r\n"
+        );
+    }
+
+    #[test]
+    fn skips_excalidraw_drawings() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "").unwrap();
+        fs::write(dir.path().join("b.excalidraw.md"), "").unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let report = add_titles(&vault, &[], false).unwrap();
+
+        assert_eq!(report.added, [PathBuf::from("a.md")]);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("b.excalidraw.md")).unwrap(),
+            ""
+        );
+    }
+
+    #[test]
+    fn rejects_unclosed_frontmatter() {
+        assert!(with_title(Path::new("n.md"), "---\na: 1\n").is_err());
+    }
 }

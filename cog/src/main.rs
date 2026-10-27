@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::error::Error as StdError;
 use std::fs::{self, File};
 use std::path::PathBuf;
@@ -9,8 +9,10 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::prelude::*;
 
 use cog::config::Config;
+use cog::organise::organise_by_tag;
 use cog::state;
 use cog::sync::{Action, apply, plan_sync};
+use cog::title::add_titles;
 use cog::vault::Vault;
 
 /// Obsidian vault management.
@@ -45,6 +47,49 @@ enum Command {
         #[arg(long)]
         no_back_update: bool,
     },
+
+    /// Add an H1 title from the filename to notes without one
+    Title {
+        #[arg(long, value_enum, default_value_t = VaultName::Work)]
+        vault: VaultName,
+
+        /// Show which notes would be titled without changing them
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Move notes in the vault root with a tag into their own directory
+    Organise {
+        /// Tag to look for, with or without the `#`
+        tag: String,
+
+        /// Directory to move notes into [default: the tag]
+        #[arg(long)]
+        dir: Option<String>,
+
+        #[arg(long, value_enum, default_value_t = VaultName::Main)]
+        vault: VaultName,
+
+        /// Show which notes would move without moving them
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum VaultName {
+    Main,
+    Work,
+}
+
+impl VaultName {
+    fn open(self, config: &Config) -> Result<Vault> {
+        let path = match self {
+            Self::Main => &config.vaults.main,
+            Self::Work => &config.vaults.work,
+        };
+        Ok(Vault::open(path)?)
+    }
 }
 
 fn main() -> ExitCode {
@@ -71,6 +116,75 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
             no_back_update,
         } => sync(&config, dry_run, !no_back_update),
+        Command::Title { vault, dry_run } => title(&config, vault, dry_run),
+        Command::Organise {
+            tag,
+            dir,
+            vault,
+            dry_run,
+        } => organise(&config, &tag, dir.as_deref(), vault, dry_run),
+    }
+}
+
+fn title(config: &Config, vault: VaultName, dry_run: bool) -> Result<ExitCode> {
+    let vault = vault.open(config)?;
+    let report = add_titles(&vault, &config.sync.skip_dirs, dry_run)?;
+
+    let verb = if dry_run {
+        "would add title"
+    } else {
+        "added title"
+    };
+    for path in &report.added {
+        tracing::info!("{verb}: {}", path.display());
+    }
+    for e in &report.errors {
+        tracing::error!("{}", chain(e));
+    }
+    println!(
+        "{}{} titles added, {} errors",
+        if dry_run { "Dry run: " } else { "" },
+        report.added.len(),
+        report.errors.len()
+    );
+    Ok(exit_code(report.errors.is_empty()))
+}
+
+fn organise(
+    config: &Config,
+    tag: &str,
+    dir: Option<&str>,
+    vault: VaultName,
+    dry_run: bool,
+) -> Result<ExitCode> {
+    let vault = vault.open(config)?;
+    let report = organise_by_tag(&vault, tag, dir, dry_run)?;
+
+    let verb = if dry_run { "would move" } else { "moved" };
+    for name in &report.moved {
+        tracing::info!("{verb}: {}", name.display());
+    }
+    for name in &report.clashes {
+        tracing::warn!("not moved, target already exists: {}", name.display());
+    }
+    for e in &report.errors {
+        tracing::error!("{}", chain(e));
+    }
+    println!(
+        "{}{} moved, {} clashes, {} errors",
+        if dry_run { "Dry run: " } else { "" },
+        report.moved.len(),
+        report.clashes.len(),
+        report.errors.len()
+    );
+    Ok(exit_code(report.errors.is_empty()))
+}
+
+fn exit_code(success: bool) -> ExitCode {
+    if success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 
@@ -123,11 +237,7 @@ fn sync(config: &Config, dry_run: bool, back_update: bool) -> Result<ExitCode> {
         println!("Conflicts were changed in both vaults and need merging by hand.");
     }
 
-    Ok(if plan.errors.is_empty() && apply_errors.is_empty() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    })
+    Ok(exit_code(plan.errors.is_empty() && apply_errors.is_empty()))
 }
 
 /// Formats an error with each of its causes.
