@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use cog::config::Config;
 use cog::organise::organise_by_tag;
@@ -16,10 +16,9 @@ fn process_vault(vault: &Path) -> Result<()> {
 fn main() -> Result<()> {
     tracing_subscriber::fmt().without_time().init();
 
-    let conf = Config::load()?;
-    let vault = PathBuf::from(conf.vault);
+    let conf = Config::load(&Config::default_path())?;
 
-    process_vault(&vault)?;
+    process_vault(&conf.vaults.main)?;
 
     Ok(())
 }

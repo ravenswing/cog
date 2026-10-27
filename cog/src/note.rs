@@ -1,126 +1,157 @@
-use anyhow::{Context, Result, bail};
 use serde_norway::Value;
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
-/// Represents a single Markdown note with separated Frontmatter and Body.
+use crate::error::{Error, IoContext, Result};
+use crate::tags::extract_tags;
+
+/// How many lines of the body are searched for an H1 title.
+const TITLE_LINES: usize = 10;
+
+/// A Markdown note, read-only.
+///
+/// The frontmatter is kept as raw text and never re-serialised, so comments
+/// and formatting survive any edit made elsewhere.
 #[derive(Debug, Clone)]
 pub struct Note {
-    /// Path to the file on disk
     pub path: PathBuf,
-    /// Note title - derived from filename
+    /// The first H1 near the top of the body, else the file stem.
     pub title: String,
-    /// Dynamic YAML data (preserves unknown fields)
-    pub frontmatter: Value,
-    /// The Markdown content (everything after the second ---)
+    /// The text between the `---` delimiters, if there are any.
+    pub frontmatter: Option<String>,
+    /// Everything after the frontmatter.
     pub body: String,
-    /// Keep track of changes that need saving
-    pub is_modified: bool,
+    pub tags: BTreeSet<String>,
+    pub mtime: SystemTime,
 }
 
 impl Note {
-    /// Reads a file, splits frontmatter/body, and parses YAML
-    pub fn load(path: PathBuf) -> Result<Self> {
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read file: {:?}", path))?;
+    /// Reads and parses the note at `path`.
+    pub fn load(path: &Path) -> Result<Self> {
+        let content = fs::read_to_string(path).ctx("read", path)?;
+        let mtime = fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ctx("read mtime of", path)?;
+        Self::parse(path, &content, mtime)
+    }
 
-        // Extract title from filename
-        let title = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Untitled")
-            .to_string();
+    /// Builds a note from already-read contents.
+    pub fn parse(path: &Path, content: &str, mtime: SystemTime) -> Result<Self> {
+        let (frontmatter, body) =
+            split_frontmatter(content).ok_or_else(|| Error::UnclosedFrontmatter {
+                path: path.to_owned(),
+            })?;
 
-        // Split manually
-        let parts: Vec<&str> = content.splitn(3, "---").collect();
-
-        if parts.len() < 3 {
-            bail!(
-                "File {:?} does not appear to have valid frontmatter delimiters",
-                path
-            );
-        }
-
-        let frontmatter: Value = serde_norway::from_str(parts[1])
-            .with_context(|| format!("Invalid YAML in {:?}", path))?;
+        let yaml = frontmatter
+            .map(serde_norway::from_str::<Value>)
+            .transpose()
+            .map_err(|source| Error::Yaml {
+                path: path.to_owned(),
+                source,
+            })?;
 
         Ok(Note {
-            path,
-            title,
-            frontmatter,
-            body: parts[2].to_string(),
-            is_modified: false,
+            path: path.to_owned(),
+            title: find_title(body).unwrap_or_else(|| stem(path)),
+            frontmatter: frontmatter.map(str::to_owned),
+            body: body.to_owned(),
+            tags: extract_tags(yaml.as_ref(), body),
+            mtime,
         })
     }
+}
 
-    /// MODIFY: Adds a tag if missing. Consumes and returns Self.
-    pub fn add_tag(mut self, new_tag: &str) -> Result<Self> {
-        // get the tags
-        let tags_seq = match self.frontmatter.get_mut("tags") {
-            Some(val) => val.as_sequence_mut(),
-            None => {
-                self.frontmatter["tags"] = Value::Sequence(serde_norway::Sequence::new());
-                self.frontmatter["tags"].as_sequence_mut()
-            }
-        };
-
-        if let Some(tags) = tags_seq {
-            let tag_value = Value::String(new_tag.to_string());
-            if !tags.contains(&tag_value) {
-                tags.push(tag_value);
-                self.is_modified = true;
-            }
-        } else {
-            bail!("The 'tags' field in {:?} is not a list.", self.title);
+/// Splits a note into its frontmatter and body.
+///
+/// Frontmatter only counts when the very first line is `---`. Returns `None`
+/// when that block is never closed.
+pub fn split_frontmatter(content: &str) -> Option<(Option<&str>, &str)> {
+    let mut lines = content.split_inclusive('\n');
+    let Some(first) = lines.next().filter(|line| line.trim() == "---") else {
+        return Some((None, content));
+    };
+    let start = first.len();
+    let mut offset = start;
+    for line in lines {
+        if line.trim() == "---" {
+            return Some((
+                Some(&content[start..offset]),
+                &content[offset + line.len()..],
+            ));
         }
-
-        Ok(self)
+        offset += line.len();
     }
+    None
+}
 
-    /// SAVE: Writes to disk ONLY if modified.
-    pub fn save(self) -> Result<()> {
-        if !self.is_modified {
-            return Ok(());
-        }
+fn find_title(body: &str) -> Option<String> {
+    body.lines()
+        .take(TITLE_LINES)
+        .find_map(|line| line.strip_prefix("# "))
+        .map(|title| title.trim().to_string())
+}
 
-        let yaml_output = serde_norway::to_string(&self.frontmatter)?;
-        let new_content = format!("---\n{}---{}", yaml_output, self.body);
-
-        fs::write(&self.path, new_content)
-            .with_context(|| format!("Failed to write to {:?}", self.path))?;
-
-        tracing::info!("Updated: {}", self.title);
-        Ok(())
-    }
+fn stem(path: &Path) -> String {
+    path.file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::UNIX_EPOCH;
 
-    fn create_dummy_note(yaml_str: &str) -> Note {
-        let frontmatter: Value = serde_norway::from_str(yaml_str).unwrap();
-        Note {
-            path: PathBuf::from("test.md"),
-            title: "Test Note".to_string(),
-            frontmatter,
-            body: "\nSome content".to_string(),
-            is_modified: false,
+    fn parse(content: &str) -> Result<Note> {
+        Note::parse(Path::new("dir/My Note.md"), content, UNIX_EPOCH)
+    }
+
+    #[test]
+    fn splits_frontmatter() {
+        let cases = [
+            ("---\na: 1\n---\nbody", Some((Some("a: 1\n"), "body"))),
+            (
+                "---\r\na: 1\r\n---\r\nbody",
+                Some((Some("a: 1\r\n"), "body")),
+            ),
+            ("---\n---\nbody", Some((Some(""), "body"))),
+            (
+                "no frontmatter\n---\n",
+                Some((None, "no frontmatter\n---\n")),
+            ),
+            ("", Some((None, ""))),
+            ("---\na: 1\nnever closed", None),
+        ];
+        for (content, expected) in cases {
+            assert_eq!(split_frontmatter(content), expected, "{content:?}");
         }
     }
 
     #[test]
-    fn test_add_tag_to_empty_frontmatter() {
-        let note = create_dummy_note("{}");
-        let updated = note.add_tag("rust").unwrap();
-        assert!(updated.is_modified);
-        assert_eq!(updated.frontmatter["tags"][0].as_str().unwrap(), "rust");
+    fn title_from_h1_or_stem() {
+        assert_eq!(
+            parse("---\na: 1\n---\n# Real Title\n").unwrap().title,
+            "Real Title"
+        );
+        assert_eq!(parse("## Sub\ntext # not\n").unwrap().title, "My Note");
+        assert_eq!(parse("").unwrap().title, "My Note");
     }
 
     #[test]
-    fn test_idempotency() {
-        let note = create_dummy_note("tags: [rust]");
-        let updated = note.add_tag("rust").unwrap();
-        assert!(!updated.is_modified); // Should NOT be dirty
+    fn collects_tags() {
+        let note = parse("---\ntags: [a]\n---\n#b\n").unwrap();
+        assert_eq!(note.tags, BTreeSet::from(["a".into(), "b".into()]));
+    }
+
+    #[test]
+    fn rejects_bad_frontmatter() {
+        assert!(matches!(
+            parse("---\nunclosed"),
+            Err(Error::UnclosedFrontmatter { .. })
+        ));
+        assert!(matches!(parse("---\na: [\n---\n"), Err(Error::Yaml { .. })));
     }
 }

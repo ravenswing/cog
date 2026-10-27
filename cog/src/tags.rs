@@ -1,97 +1,128 @@
+//! Tag extraction following Obsidian's rules.
+//!
+//! Tags are lowercased, since Obsidian treats `#Game` and `#game` as one
+//! tag, and nested tags also yield their parts: `games/rpg` adds `games` and
+//! `rpg` alongside `games/rpg`.
+
 use regex::Regex;
 use serde_norway::Value;
-use std::cmp::min;
-use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
+use std::sync::LazyLock;
 
-/// Returns the sorted frontmatter and inline tags of a note.
-pub fn get_tags(note: &Path) -> Option<Vec<String>> {
-    let content = fs::read_to_string(note).ok()?;
-    let mut tags = HashSet::new();
+/// How many lines of the body are searched for inline tags.
+const INLINE_TAG_LINES: usize = 15;
 
-    let lines: Vec<&str> = content.lines().collect();
-    let mut yaml_str = String::new();
-    let mut body_start = 0;
+static WIKILINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)\[\[.*?\]\]").unwrap());
+static INLINE_TAG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|\s)#([\p{L}\p{N}_/-]+)").unwrap());
 
-    // 1. Isolate the YAML Frontmatter
-    if lines.first() == Some(&"---")
-        && let Some(end_idx) = lines.iter().skip(1).position(|&x| x == "---")
-    {
-        let end_idx = end_idx + 1; // Adjust index because of the .skip(1)
-        body_start = end_idx + 1; // Body starts after the closing "---"
-
-        // Reconstruct the YAML block to pass to serde_norway
-        yaml_str = lines[1..end_idx].join("\n");
-    }
-
-    // 2. Parse YAML with serde_norway
-    if !yaml_str.is_empty() {
-        // Parse into a generic YAML Mapping
-        if let Ok(Value::Mapping(map)) = serde_norway::from_str::<Value>(&yaml_str) {
-            // Obsidian accepts both "tag" and "tags"
-            let tag_keys = [
-                Value::String("tags".to_string()),
-                Value::String("tag".to_string()),
-            ];
-
-            for key in tag_keys {
-                if let Some(val) = map.get(&key) {
-                    match val {
-                        // Handles `tags: game` or `tags: game, rpg`
-                        Value::String(s) => {
-                            for t in s.split(',') {
-                                let clean_tag = t.trim().trim_start_matches('#');
-                                if !clean_tag.is_empty() {
-                                    tags.insert(clean_tag.to_string());
-                                }
-                            }
-                        }
-                        // Handles `tags: [game, rpg]` or bulleted lists
-                        Value::Sequence(seq) => {
-                            for item in seq {
-                                if let Value::String(s) = item {
-                                    let clean_tag = s.trim().trim_start_matches('#');
-                                    if !clean_tag.is_empty() {
-                                        tags.insert(clean_tag.to_string());
-                                    }
-                                }
-                            }
-                        }
-                        _ => {} // Ignore other YAML types (e.g., numbers, nested maps)
-                    }
-                }
-            }
+/// Collects the tags from a note's parsed frontmatter and the top of its body.
+pub fn extract_tags(frontmatter: Option<&Value>, body: &str) -> BTreeSet<String> {
+    let mut tags = BTreeSet::new();
+    if let Some(frontmatter) = frontmatter {
+        for raw in frontmatter_tags(frontmatter) {
+            insert(&mut tags, raw);
         }
     }
-
-    // 3. Parse Inline Tags from the Body
-    let body = lines[body_start..min(lines.len(), body_start + 5)].join("\n");
-    if let Ok(re) = Regex::new(r"(?:^|\s)#([a-zA-Z0-9_\-\/]+)") {
-        for cap in re.captures_iter(&body) {
-            if let Some(tag) = cap.get(1) {
-                tags.insert(tag.as_str().to_string());
-            }
-        }
+    for raw in inline_tags(body) {
+        insert(&mut tags, raw);
     }
-
-    // 4. Convert to a sorted Vec
-    let mut tag_vec: Vec<String> = tags.into_iter().collect();
-    tag_vec.sort();
-
-    Some(tag_vec)
+    tags
 }
 
-/// Returns the note's path if it carries `tag`.
-pub fn note_has_tag(note: &Path, tag: &str) -> Option<PathBuf> {
-    match get_tags(note) {
-        Some(v) => {
-            if v.contains(&tag.to_string()) {
-                Some(note.to_owned())
-            } else {
-                None
-            }
+/// Tags under the `tags` or `tag` keys, as a list or comma-separated string.
+fn frontmatter_tags(frontmatter: &Value) -> Vec<&str> {
+    ["tags", "tag"]
+        .into_iter()
+        .filter_map(|key| frontmatter.get(key))
+        .flat_map(|value| match value {
+            Value::String(s) => s.split(',').collect(),
+            Value::Sequence(seq) => seq.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+/// `#tags` in the first lines of the body, ignoring any inside `[[links]]`.
+fn inline_tags(body: &str) -> Vec<String> {
+    let head: Vec<&str> = body.lines().take(INLINE_TAG_LINES).collect();
+    let text = WIKILINK.replace_all(&head.join("\n"), "").into_owned();
+    INLINE_TAG
+        .captures_iter(&text)
+        .map(|cap| cap[1].to_string())
+        .collect()
+}
+
+fn insert(tags: &mut BTreeSet<String>, raw: impl AsRef<str>) {
+    let tag = raw.as_ref().trim().trim_start_matches('#').to_lowercase();
+    // Obsidian requires at least one non-numeric character
+    if tag.is_empty() || tag.chars().all(|c| c.is_numeric() || c == '/') {
+        return;
+    }
+    if tag.contains('/') {
+        for part in tag.split('/').filter(|p| !p.is_empty()) {
+            tags.insert(part.to_string());
         }
-        None => None,
+    }
+    tags.insert(tag);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tags(frontmatter: &str, body: &str) -> Vec<String> {
+        let value: Value = serde_norway::from_str(frontmatter).unwrap();
+        extract_tags(Some(&value), body).into_iter().collect()
+    }
+
+    #[test]
+    fn frontmatter_forms() {
+        let cases = [
+            ("tags: [game, rpg]", vec!["game", "rpg"]),
+            ("tags:\n  - game\n  - rpg", vec!["game", "rpg"]),
+            ("tags: game, rpg", vec!["game", "rpg"]),
+            ("tag: game", vec!["game"]),
+            ("tags: '#game'", vec!["game"]),
+            ("tags: [Game]", vec!["game"]),
+            ("tags:", vec![]),
+            ("tags: 5", vec![]),
+            ("title: nothing", vec![]),
+        ];
+        for (frontmatter, expected) in cases {
+            assert_eq!(tags(frontmatter, ""), expected, "{frontmatter}");
+        }
+    }
+
+    #[test]
+    fn inline_forms() {
+        let cases = [
+            ("#no-sync", vec!["no-sync"]),
+            ("text #Game2 more", vec!["game2"]),
+            ("#tag, then text", vec!["tag"]),
+            ("#games/rpg", vec!["games", "games/rpg", "rpg"]),
+            ("#café", vec!["café"]),
+            ("# Heading", vec![]),
+            ("## Heading", vec![]),
+            ("#2024", vec![]),
+            ("url.com/page#anchor", vec![]),
+            ("see [[note#section]]", vec![]),
+        ];
+        for (body, expected) in cases {
+            assert_eq!(tags("{}", body), expected, "{body}");
+        }
+    }
+
+    #[test]
+    fn inline_tags_only_in_first_lines() {
+        let body = format!("{}#late", "line\n".repeat(INLINE_TAG_LINES));
+        assert!(tags("{}", &body).is_empty());
+        let body = format!("{}#early", "line\n".repeat(INLINE_TAG_LINES - 1));
+        assert_eq!(tags("{}", &body), ["early"]);
+    }
+
+    #[test]
+    fn combines_frontmatter_and_inline() {
+        assert_eq!(tags("tags: [a]", "#b #a"), ["a", "b"]);
     }
 }

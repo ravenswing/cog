@@ -1,8 +1,8 @@
-use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
-use crate::tags::note_has_tag;
+use crate::error::{IoContext, Result};
+use crate::note::Note;
 
 /// Moves notes in the vault root tagged `tag` into a subdirectory.
 ///
@@ -17,25 +17,26 @@ pub fn organise_by_tag(vault: &Path, tag: &str, dir_name: Option<&str>) -> Resul
     );
     // Create the directory if it doesn't exits
     if !tag_dir.exists() {
-        fs::create_dir(&tag_dir)
-            .with_context(|| format!("Unable to make directory at: {}", tag_dir.display()))?;
+        fs::create_dir(&tag_dir).ctx("create directory", &tag_dir)?;
     }
 
     // Get tagged notes in the *root* vault only
-    let notes: Vec<_> = fs::read_dir(vault)?
+    let notes: Vec<_> = fs::read_dir(vault)
+        .ctx("read directory", vault)?
         // from all the files, only get those that are valid files (and unwrap)
         .filter_map(Result::ok)
         // only get those that have the extension .md
         .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("md"))
         // only get those that have the tag
-        .filter_map(|note| note_has_tag(&note.path(), tag))
+        .map(|entry| entry.path())
+        .filter(|path| Note::load(path).is_ok_and(|note| note.tags.contains(tag)))
         .collect();
 
     // Move all the tagged notes into the correct folder
     for note in notes {
         let new_path = &tag_dir.join(note.file_name().unwrap());
         tracing::info!("  Moving {:?} -> {:?}", &note, &new_path);
-        fs::rename(&note, new_path)?;
+        fs::rename(&note, new_path).ctx("move", &note)?;
     }
 
     Ok(())
