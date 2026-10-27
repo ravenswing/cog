@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use std::cmp::Reverse;
 use std::error::Error as StdError;
 use std::fs::{self, File};
 use std::iter;
@@ -13,6 +14,7 @@ use cog::check::check_vault;
 use cog::config::Config;
 use cog::lock::RunLock;
 use cog::organise::{apply_moves, plan_moves};
+use cog::query::{count_tags, tagged_notes};
 use cog::state;
 use cog::sync::{Action, apply, plan_sync};
 use cog::tags::Tag;
@@ -68,6 +70,15 @@ enum Command {
         vault: VaultName,
     },
 
+    /// List every tag in a vault with how many notes have it
+    Tags {
+        #[arg(long, value_enum, default_value_t = VaultName::Main)]
+        vault: VaultName,
+
+        #[arg(long, value_enum, default_value_t = TagOrder::Count)]
+        sort: TagOrder,
+    },
+
     /// Download data from the Steam Web API
     #[cfg(feature = "steam")]
     #[command(subcommand)]
@@ -96,6 +107,14 @@ enum Command {
 enum SteamCommand {
     /// Save the player summary and owned games to the configured data path
     Fetch,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum TagOrder {
+    /// Most used first
+    Count,
+    /// Alphabetical
+    Name,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -146,6 +165,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
         } => organise(&config, &tag, dir.as_deref(), vault, dry_run),
         Command::Check { vault } => check(&config, vault),
+        Command::Tags { vault, sort } => tags(&config, vault, sort),
         #[cfg(feature = "steam")]
         Command::Steam(SteamCommand::Fetch) => steam_fetch(&config),
     }
@@ -179,6 +199,25 @@ fn check(config: &Config, vault: VaultName) -> Result<ExitCode> {
         tracing::warn!("{}", chain(e));
     }
     println!("{report}");
+    Ok(exit_code(!report.has_errors()))
+}
+
+fn tags(config: &Config, vault: VaultName, sort: TagOrder) -> Result<ExitCode> {
+    let vault = vault.open(config)?;
+    let report = tagged_notes(&vault, &config.sync.skip_dirs)?;
+    for e in &report.errors {
+        tracing::warn!("{}", chain(e));
+    }
+
+    let mut counts: Vec<_> = count_tags(&report.done).into_iter().collect();
+    if let TagOrder::Count = sort {
+        // Stable, so tags with the same count stay in name order
+        counts.sort_by_key(|&(_, count)| Reverse(count));
+    }
+    let width = counts.iter().map(|(_, n)| n.to_string().len()).max();
+    for (tag, count) in counts {
+        println!("{count:>width$}  #{tag}", width = width.unwrap_or(0));
+    }
     Ok(exit_code(!report.has_errors()))
 }
 
