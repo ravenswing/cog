@@ -46,7 +46,10 @@ fn prepare_tmp(path: &Path) -> Result<PathBuf> {
 
 fn finish(tmp: &Path, path: &Path) -> Result<()> {
     fs::rename(tmp, path).or_else(|e| {
-        let _ = fs::remove_file(tmp);
+        // Best effort, the rename failure is the error worth reporting
+        if let Err(cleanup) = fs::remove_file(tmp) {
+            tracing::debug!("failed to remove {}: {cleanup}", tmp.display());
+        }
         Err(e).ctx("replace", path)
     })
 }

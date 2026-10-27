@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, IoContext, Result};
 use crate::fsutil::write_atomic;
-use crate::note::split_frontmatter;
+use crate::note::{Split, split_frontmatter};
 use crate::vault::Vault;
 
 /// The outcome of titling a whole vault.
@@ -58,9 +58,10 @@ pub fn add_titles(vault: &Vault, skip_dirs: &[String], dry_run: bool) -> Result<
 /// The title is the file stem without any `prefix - ` annotation, with its
 /// first letter capitalised.
 pub fn with_title(path: &Path, content: &str) -> Result<Option<String>> {
-    let (_, body) = split_frontmatter(content).ok_or_else(|| Error::UnclosedFrontmatter {
-        path: path.to_owned(),
-    })?;
+    let Split { header, body, .. } =
+        split_frontmatter(content).ok_or_else(|| Error::UnclosedFrontmatter {
+            path: path.to_owned(),
+        })?;
 
     let first_line = body.lines().find(|line| !line.trim().is_empty());
     if first_line.is_some_and(|line| line.starts_with("# ")) {
@@ -77,7 +78,6 @@ pub fn with_title(path: &Path, content: &str) -> Result<Option<String>> {
         .chain(chars)
         .collect();
 
-    let header = &content[..content.len() - body.len()];
     Ok(Some(format!("{header}# {title}\n{body}")))
 }
 
@@ -145,6 +145,9 @@ mod tests {
 
     #[test]
     fn rejects_unclosed_frontmatter() {
-        assert!(with_title(Path::new("n.md"), "---\na: 1\n").is_err());
+        assert!(matches!(
+            with_title(Path::new("n.md"), "---\na: 1\n"),
+            Err(Error::UnclosedFrontmatter { .. })
+        ));
     }
 }

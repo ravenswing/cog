@@ -12,9 +12,10 @@ use std::sync::LazyLock;
 /// How many lines of the body are searched for inline tags.
 const INLINE_TAG_LINES: usize = 15;
 
-static WIKILINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)\[\[.*?\]\]").unwrap());
+static WIKILINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)\[\[.*?\]\]").expect("valid regex"));
 static INLINE_TAG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|\s)#([\p{L}\p{N}_/-]+)").unwrap());
+    LazyLock::new(|| Regex::new(r"(?:^|\s)#([\p{L}\p{N}_/-]+)").expect("valid regex"));
 
 /// Collects the tags from a note's parsed frontmatter and the top of its body.
 pub fn extract_tags(frontmatter: Option<&Value>, body: &str) -> BTreeSet<String> {

@@ -1,3 +1,9 @@
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "setup failures in shared helpers should fail the test"
+)]
+
 use filetime::FileTime;
 use std::fs;
 use std::path::Path;

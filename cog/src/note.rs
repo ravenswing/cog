@@ -39,10 +39,11 @@ impl Note {
 
     /// Builds a note from already-read contents.
     pub fn parse(path: &Path, content: &str, mtime: SystemTime) -> Result<Self> {
-        let (frontmatter, body) =
-            split_frontmatter(content).ok_or_else(|| Error::UnclosedFrontmatter {
-                path: path.to_owned(),
-            })?;
+        let Split {
+            frontmatter, body, ..
+        } = split_frontmatter(content).ok_or_else(|| Error::UnclosedFrontmatter {
+            path: path.to_owned(),
+        })?;
 
         let yaml = frontmatter
             .map(serde_norway::from_str::<Value>)
@@ -63,25 +64,47 @@ impl Note {
     }
 }
 
-/// Splits a note into its frontmatter and body.
+/// A note's contents, split around its frontmatter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Split<'a> {
+    /// Everything before the body, including both `---` lines. Empty when
+    /// there is no frontmatter.
+    pub header: &'a str,
+    /// The text between the `---` lines, if there are any.
+    pub frontmatter: Option<&'a str>,
+    pub body: &'a str,
+}
+
+/// Splits a note around its frontmatter.
 ///
 /// Frontmatter only counts when the very first line is `---`. Returns `None`
 /// when that block is never closed.
-pub fn split_frontmatter(content: &str) -> Option<(Option<&str>, &str)> {
-    let mut lines = content.split_inclusive('\n');
-    let Some(first) = lines.next().filter(|line| line.trim() == "---") else {
-        return Some((None, content));
+pub fn split_frontmatter(content: &str) -> Option<Split<'_>> {
+    let opening = content
+        .split_inclusive('\n')
+        .next()
+        .filter(|line| line.trim() == "---");
+    let Some(opening) = opening else {
+        return Some(Split {
+            header: "",
+            frontmatter: None,
+            body: content,
+        });
     };
-    let start = first.len();
-    let mut offset = start;
-    for line in lines {
+
+    let rest = content.strip_prefix(opening)?;
+    let mut frontmatter_len = 0;
+    for line in rest.split_inclusive('\n') {
         if line.trim() == "---" {
-            return Some((
-                Some(&content[start..offset]),
-                &content[offset + line.len()..],
-            ));
+            let (frontmatter, closing) = rest.split_at_checked(frontmatter_len)?;
+            let body = closing.strip_prefix(line)?;
+            return Some(Split {
+                header: content.strip_suffix(body)?,
+                frontmatter: Some(frontmatter),
+                body,
+            });
         }
-        offset += line.len();
+        frontmatter_len += line.len();
     }
     None
 }
@@ -111,6 +134,7 @@ mod tests {
 
     #[test]
     fn splits_frontmatter() {
+        let split = |content| split_frontmatter(content).map(|s| (s.frontmatter, s.body));
         let cases = [
             ("---\na: 1\n---\nbody", Some((Some("a: 1\n"), "body"))),
             (
@@ -126,8 +150,17 @@ mod tests {
             ("---\na: 1\nnever closed", None),
         ];
         for (content, expected) in cases {
-            assert_eq!(split_frontmatter(content), expected, "{content:?}");
+            assert_eq!(split(content), expected, "{content:?}");
         }
+    }
+
+    #[test]
+    fn header_is_everything_before_body() {
+        let content = "---\r\na: 1\r\n---\r\nbody";
+        let split = split_frontmatter(content).unwrap();
+        assert_eq!(split.header, "---\r\na: 1\r\n---\r\n");
+        assert_eq!(format!("{}{}", split.header, split.body), content);
+        assert_eq!(split_frontmatter("body").unwrap().header, "");
     }
 
     #[test]

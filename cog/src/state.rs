@@ -51,7 +51,7 @@ pub fn write_last_sync(path: &Path, time: SystemTime) -> Result<()> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64();
-    let contents = toml::to_string(&StateFile { last_sync }).expect("state always serialises");
+    let contents = toml::to_string(&StateFile { last_sync }).map_err(Error::StateEncode)?;
     write_atomic(path, contents.as_bytes())
 }
 

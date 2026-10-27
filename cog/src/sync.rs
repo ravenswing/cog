@@ -200,32 +200,27 @@ impl Planner<'_> {
         }
 
         // Check mtimes first, so unchanged notes are never read
-        let change = if in_dest {
+        let action = if in_dest {
             let change = change(
                 mtime(&self.src.root().join(path))?,
                 mtime(&self.dest.root().join(path))?,
                 self.last_sync,
             );
-            if change == Change::Neither {
-                return Ok(Action::Skip(SkipReason::Unchanged));
+            match change {
+                Change::Neither => return Ok(Action::Skip(SkipReason::Unchanged)),
+                Change::Source => Action::Update,
+                Change::Destination if self.back_update => Action::BackUpdate,
+                Change::Destination => Action::Skip(SkipReason::DestinationNewer),
+                Change::Both => Action::Conflict,
             }
-            Some(change)
         } else {
-            None
+            Action::Create
         };
 
-        if let Some(tag) = self.excluded_tag(path)? {
-            return Ok(Action::Skip(SkipReason::ExcludedTag(tag)));
+        match self.excluded_tag(path)? {
+            Some(tag) => Ok(Action::Skip(SkipReason::ExcludedTag(tag))),
+            None => Ok(action),
         }
-
-        Ok(match change {
-            None => Action::Create,
-            Some(Change::Source) => Action::Update,
-            Some(Change::Destination) if self.back_update => Action::BackUpdate,
-            Some(Change::Destination) => Action::Skip(SkipReason::DestinationNewer),
-            Some(Change::Both) => Action::Conflict,
-            Some(Change::Neither) => unreachable!("returned early above"),
-        })
     }
 
     fn in_excluded_dir(&self, path: &Path) -> bool {

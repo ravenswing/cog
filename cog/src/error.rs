@@ -26,6 +26,9 @@ pub enum Error {
         source: toml::de::Error,
     },
 
+    #[error("failed to encode the state file")]
+    StateEncode(#[source] toml::ser::Error),
+
     #[error("frontmatter in {path} has no closing `---`")]
     UnclosedFrontmatter { path: PathBuf },
 
