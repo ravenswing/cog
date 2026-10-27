@@ -1,4 +1,4 @@
-use note_tagger::Note;
+use cog::note::Note;
 use std::fs;
 use tempfile::tempdir;
 
@@ -17,13 +17,15 @@ fn test_add_tag() {
 
     // Check that the tag was added
     let new_note = Note::load(file_path.clone()).unwrap();
-    assert!(new_note
-        .frontmatter
-        .get("tags")
-        .unwrap()
-        .as_sequence()
-        .unwrap()
-        .contains(&serde_yaml::Value::String("integration-test".to_string())));
+    assert!(
+        new_note
+            .frontmatter
+            .get("tags")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .contains(&serde_norway::Value::String("integration-test".to_string()))
+    );
 
     // Check that the body is preserved
     assert_eq!(new_note.body.trim(), "# Body Content");
