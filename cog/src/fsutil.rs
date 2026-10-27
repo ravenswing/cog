@@ -4,8 +4,8 @@
 //! place, which is atomic on the same filesystem.
 
 use filetime::FileTime;
-use std::fs;
-use std::io::{ErrorKind, Write};
+use std::fs::{self, File};
+use std::io::{self, ErrorKind, Write};
 use std::path::Path;
 use tempfile::NamedTempFile;
 
@@ -34,13 +34,20 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
 /// Sync relies on copies keeping their mtime, otherwise every copied note
 /// would look modified on the next run.
 pub fn copy_preserving_mtime(src: &Path, dest: &Path) -> Result<()> {
-    let meta = fs::metadata(src).ctx("read metadata of", src)?;
-    let tmp = temp_beside(dest, Some(meta.permissions()))?;
-    fs::copy(src, tmp.path()).ctx("copy to", tmp.path())?;
-    filetime::set_file_times(
-        tmp.path(),
-        FileTime::from_last_access_time(&meta),
-        FileTime::from_last_modification_time(&meta),
+    // Read everything through one handle, so the metadata and contents come
+    // from the same file even if the note is replaced part way through
+    let mut file = File::open(src).ctx("open", src)?;
+    let meta = file.metadata().ctx("read metadata of", src)?;
+    let mut tmp = temp_beside(dest, Some(meta.permissions()))?;
+    io::copy(&mut file, tmp.as_file_mut()).ctx("copy to", tmp.path())?;
+    // The umask may have narrowed the mode the temp file was created with
+    tmp.as_file()
+        .set_permissions(meta.permissions())
+        .ctx("set permissions on", tmp.path())?;
+    filetime::set_file_handle_times(
+        tmp.as_file(),
+        Some(FileTime::from_last_access_time(&meta)),
+        Some(FileTime::from_last_modification_time(&meta)),
     )
     .ctx("set times on", tmp.path())?;
     persist(tmp, dest)
