@@ -1,8 +1,9 @@
 //! Tag extraction following Obsidian's rules.
 //!
 //! Tags are lowercased, since Obsidian treats `#Game` and `#game` as one
-//! tag, and nested tags also yield their parts: `games/rpg` adds `games` and
-//! `rpg` alongside `games/rpg`.
+//! tag, and nested tags also yield their parents: `games/rpg` adds `games`
+//! alongside `games/rpg`, as searching Obsidian for `#games` finds both. The
+//! last part, `rpg`, is not a tag on its own.
 
 use regex::Regex;
 use serde::Deserialize;
@@ -16,10 +17,18 @@ use std::sync::LazyLock;
 /// How many lines of the body are searched for inline tags.
 const INLINE_TAG_LINES: usize = 15;
 
+#[expect(
+    clippy::expect_used,
+    reason = "the pattern is a constant, and any use in the tests compiles it"
+)]
 static WIKILINK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)\[\[.*?\]\]").expect("valid regex"));
+#[expect(
+    clippy::expect_used,
+    reason = "the pattern is a constant, and any use in the tests compiles it"
+)]
 static INLINE_TAG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|\s)#([\p{L}\p{N}_/-]+)").expect("valid regex"));
+    LazyLock::new(|| Regex::new(r"(?:^|\s)#[\p{L}\p{N}_/-]+").expect("valid regex"));
 
 /// A tag, normalised the way Obsidian compares them.
 ///
@@ -46,15 +55,19 @@ impl Tag {
         &self.0
     }
 
-    /// The tag itself, followed by each part if it is nested.
-    pub fn with_parts(self) -> impl Iterator<Item = Tag> {
-        let parts: Vec<Tag> = self
+    /// The tag itself, followed by each parent if it is nested.
+    ///
+    /// `games/2024/rpg` yields `games` and `games/2024` as well. Parents that
+    /// aren't valid tags on their own, such as `2024` in `2024/q1`, are left
+    /// out.
+    pub fn with_parents(self) -> impl Iterator<Item = Tag> {
+        let parents: Vec<Tag> = self
             .0
-            .split('/')
-            .filter(|part| !part.is_empty() && *part != self.0)
-            .map(|part| Tag(part.to_owned()))
+            .match_indices('/')
+            .filter_map(|(end, _)| self.0.get(..end))
+            .filter_map(Tag::parse)
             .collect();
-        std::iter::once(self).chain(parts)
+        std::iter::once(self).chain(parents)
     }
 }
 
@@ -88,14 +101,13 @@ impl Borrow<str> for Tag {
 
 /// Collects the tags from a note's parsed frontmatter and the top of its body.
 pub fn extract_tags(frontmatter: Option<&Value>, body: &str) -> BTreeSet<Tag> {
-    let inline = inline_tags(body);
     frontmatter
         .map(frontmatter_tags)
         .unwrap_or_default()
         .into_iter()
-        .chain(inline.iter().map(String::as_str))
         .filter_map(Tag::parse)
-        .flat_map(Tag::with_parts)
+        .chain(inline_tags(body))
+        .flat_map(Tag::with_parents)
         .collect()
 }
 
@@ -113,7 +125,7 @@ fn frontmatter_tags(frontmatter: &Value) -> Vec<&str> {
 }
 
 /// `#tags` in the first lines of the body, ignoring any inside `[[links]]`.
-fn inline_tags(body: &str) -> Vec<String> {
+fn inline_tags(body: &str) -> Vec<Tag> {
     let head_len = body
         .split_inclusive('\n')
         .take(INLINE_TAG_LINES)
@@ -122,9 +134,11 @@ fn inline_tags(body: &str) -> Vec<String> {
     let head = body.get(..head_len).unwrap_or(body);
     // Only allocates if there are links to remove
     let text = WIKILINK.replace_all(head, "");
+    // Matches start with whitespace and `#`, which `Tag::parse` strips.
+    // Without a capture group the regex only has to find each match.
     INLINE_TAG
-        .captures_iter(&text)
-        .map(|cap| cap[1].to_string())
+        .find_iter(&text)
+        .filter_map(|m| Tag::parse(m.as_str()))
         .collect()
 }
 
@@ -160,14 +174,20 @@ mod tests {
     }
 
     #[test]
-    fn nested_tags_yield_their_parts() {
-        let parts: Vec<String> = Tag::parse("games/2024/rpg")
-            .unwrap()
-            .with_parts()
-            .map(|tag| tag.to_string())
-            .collect();
-        assert_eq!(parts, ["games/2024/rpg", "games", "2024", "rpg"]);
-        assert_eq!(Tag::parse("game").unwrap().with_parts().count(), 1);
+    fn nested_tags_yield_their_parents() {
+        let parents = |raw| -> Vec<String> {
+            Tag::parse(raw)
+                .unwrap()
+                .with_parents()
+                .map(|tag| tag.to_string())
+                .collect()
+        };
+        assert_eq!(
+            parents("games/2024/rpg"),
+            ["games/2024/rpg", "games", "games/2024"]
+        );
+        assert_eq!(parents("2024/q1"), ["2024/q1"]);
+        assert_eq!(parents("game"), ["game"]);
     }
 
     #[test]
@@ -194,7 +214,7 @@ mod tests {
             ("#no-sync", vec!["no-sync"]),
             ("text #Game2 more", vec!["game2"]),
             ("#tag, then text", vec!["tag"]),
-            ("#games/rpg", vec!["games", "games/rpg", "rpg"]),
+            ("#games/rpg", vec!["games", "games/rpg"]),
             ("#café", vec!["café"]),
             ("# Heading", vec![]),
             ("## Heading", vec![]),

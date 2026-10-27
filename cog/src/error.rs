@@ -26,8 +26,17 @@ pub enum Error {
         source: toml::de::Error,
     },
 
+    #[error("invalid last sync time {value} in {path}")]
+    LastSync { path: PathBuf, value: f64 },
+
+    #[error("another cog run is in progress, it holds the lock on {path}")]
+    Locked { path: PathBuf },
+
     #[error("failed to encode the state file")]
     StateEncode(#[source] toml::ser::Error),
+
+    #[error("the system clock is set before 1970")]
+    Clock(#[source] std::time::SystemTimeError),
 
     #[error("frontmatter in {path} has no closing `---`")]
     UnclosedFrontmatter { path: PathBuf },
@@ -38,6 +47,12 @@ pub enum Error {
         #[source]
         source: serde_norway::Error,
     },
+
+    #[error("{path} has a name that isn't valid UTF-8")]
+    NonUtf8Name { path: PathBuf },
+
+    #[error("vaults {src} and {dest} are the same, or one is inside the other")]
+    OverlappingVaults { src: PathBuf, dest: PathBuf },
 
     #[error("{path} is not a directory")]
     NotADirectory { path: PathBuf },

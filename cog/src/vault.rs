@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -56,7 +57,9 @@ impl Vault {
 
     /// All notes in the vault, in path order.
     ///
-    /// Directories named in `skip_dirs` are not entered, at any depth.
+    /// Hidden files and directories, such as `.obsidian` and `.trash`, are
+    /// left out as Obsidian does. Directories named in `skip_dirs` are not
+    /// entered, at any depth.
     pub fn notes<'a>(
         &'a self,
         skip_dirs: &'a BTreeSet<String>,
@@ -65,12 +68,11 @@ impl Vault {
             .sort_by_file_name()
             .into_iter()
             .filter_entry(move |entry| {
+                let name = entry.file_name();
                 let skipped = entry.depth() > 0
-                    && entry.file_type().is_dir()
-                    && entry
-                        .file_name()
-                        .to_str()
-                        .is_some_and(|d| skip_dirs.contains(d));
+                    && (is_hidden(name)
+                        || entry.file_type().is_dir()
+                            && name.to_str().is_some_and(|d| skip_dirs.contains(d)));
                 !skipped
             })
             .filter_map(move |entry| match entry {
@@ -85,6 +87,12 @@ impl Vault {
     }
 }
 
+/// Whether Obsidian hides a file or directory, which it does for any name
+/// starting with `.`.
+pub(crate) fn is_hidden(name: &OsStr) -> bool {
+    name.as_encoded_bytes().starts_with(b".")
+}
+
 fn is_markdown(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == "md")
 }
@@ -95,13 +103,16 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn walks_notes_in_order_skipping_dirs() {
+    fn walks_notes_in_order_skipping_hidden_and_skipped_dirs() {
         let dir = tempfile::tempdir().unwrap();
         for path in [
             "z.md",
             "sub/b.md",
             "sub/templates/c.md",
             "templates/d.md",
+            ".trash/old.md",
+            ".obsidian/x.md",
+            "sub/.hidden.md",
             "e.txt",
             "a.md",
         ] {

@@ -6,19 +6,21 @@
 //!
 //! Whether a note changed is judged by comparing its mtime with the time of
 //! the last sync. Copies keep the source's mtime, so a note that was just
-//! copied is seen as unchanged on the next run.
+//! copied is seen as unchanged on the next run. If that run's sync time
+//! wasn't recorded, both copies look changed, so a note whose copies have
+//! the same mtime and contents is treated as unchanged too.
 
 use rayon::prelude::*;
-use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::time::SystemTime;
 
 use crate::config::SyncConfig;
 use crate::error::{Error, IoContext, Result};
 use crate::fsutil::copy_preserving_mtime;
-use crate::note::Note;
+use crate::note::load_tags;
 use crate::report::Report;
 use crate::tags::Tag;
 use crate::vault::{NotePath, Vault};
@@ -110,7 +112,19 @@ pub struct SyncPlan {
 }
 
 impl SyncPlan {
+    /// The time to record as the last sync, or `None` if any note failed.
+    ///
+    /// Recording a sync with failures would make the failed notes look
+    /// unchanged on the next run, so they would never be retried.
+    pub fn completed_at(&self) -> Option<SystemTime> {
+        self.errors.is_empty().then_some(self.started)
+    }
+
     /// How many notes have each action, and how many failed.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "each count is at most the number of notes"
+    )]
     pub fn summary(&self) -> Summary {
         let summary = Summary {
             errors: self.errors.len(),
@@ -157,8 +171,9 @@ impl fmt::Display for Summary {
 
 /// Works out what syncing `src` into `dest` would do.
 ///
-/// Fails only if either vault can't be walked. Notes that can't be read are
-/// collected in [`SyncPlan::errors`] and left out of the plan.
+/// Fails if the vaults overlap, or the source vault can't be walked. Notes
+/// that can't be read are collected in [`SyncPlan::errors`] and left out of
+/// the plan.
 pub fn plan_sync(
     src: &Vault,
     dest: &Vault,
@@ -166,9 +181,9 @@ pub fn plan_sync(
     config: &SyncConfig,
     back_update: bool,
 ) -> Result<SyncPlan> {
+    check_separate(src, dest)?;
     let started = SystemTime::now();
     let src_paths: Vec<NotePath> = src.notes(&config.skip_dirs).collect::<Result<_>>()?;
-    let dest_paths: BTreeSet<NotePath> = dest.notes(&config.skip_dirs).collect::<Result<_>>()?;
 
     let planner = Planner {
         src,
@@ -184,7 +199,7 @@ pub fn plan_sync(
     } = src_paths
         .into_par_iter()
         .map(|path| {
-            let action = planner.plan(&path, dest_paths.contains(&path))?;
+            let action = planner.plan(&path)?;
             Ok(Planned { path, action })
         })
         .collect();
@@ -204,27 +219,31 @@ struct Planner<'a> {
 }
 
 impl Planner<'_> {
-    fn plan(&self, path: &NotePath, in_dest: bool) -> Result<Action> {
+    fn plan(&self, path: &NotePath) -> Result<Action> {
         if self.in_excluded_dir(path) {
             return Ok(Action::Skip(SkipReason::ExcludedDir));
         }
 
         // Check mtimes first, so unchanged notes are never read
-        let action = if in_dest {
-            let change = change(
-                mtime(&self.src.resolve(path))?,
-                mtime(&self.dest.resolve(path))?,
-                self.last_sync,
-            );
-            match change {
-                Change::Neither => return Ok(Action::Skip(SkipReason::Unchanged)),
-                Change::Source => Action::Update,
-                Change::Destination if self.back_update => Action::BackUpdate,
-                Change::Destination => Action::Skip(SkipReason::DestinationNewer),
-                Change::Both => Action::Conflict,
+        let (src_path, dest_path) = (self.src.resolve(path), self.dest.resolve(path));
+        let action = match dest_mtime(&dest_path)? {
+            Some(dest) => {
+                let src = mtime(&src_path)?;
+                match change(src, dest, self.last_sync) {
+                    Change::Neither => return Ok(Action::Skip(SkipReason::Unchanged)),
+                    Change::Source => Action::Update,
+                    Change::Destination if self.back_update => Action::BackUpdate,
+                    Change::Destination => Action::Skip(SkipReason::DestinationNewer),
+                    // A copy from a sync whose time wasn't recorded. The
+                    // mtime clock is coarse, so two separate edits can share
+                    // an mtime too, and only the contents tell them apart
+                    Change::Both if src == dest && same_contents(&src_path, &dest_path)? => {
+                        return Ok(Action::Skip(SkipReason::Unchanged));
+                    }
+                    Change::Both => Action::Conflict,
+                }
             }
-        } else {
-            Action::Create
+            None => Action::Create,
         };
 
         match self.excluded_tag(path)? {
@@ -243,19 +262,45 @@ impl Planner<'_> {
     }
 
     fn excluded_tag(&self, path: &NotePath) -> Result<Option<Tag>> {
-        let note = Note::load(&self.src.resolve(path))?;
-        Ok(note
-            .tags
-            .intersection(&self.config.exclude_tags)
-            .next()
-            .cloned())
+        let tags = load_tags(&self.src.resolve(path))?;
+        Ok(tags.intersection(&self.config.exclude_tags).next().cloned())
     }
+}
+
+/// Fails if `src` and `dest` are the same directory, or one is inside the
+/// other, which would copy notes back into the vault they came from.
+///
+/// Both roots are resolved first, so a symlink or `..` can't hide an overlap.
+fn check_separate(src: &Vault, dest: &Vault) -> Result<()> {
+    let resolve = |vault: &Vault| fs::canonicalize(vault.root()).ctx("resolve", vault.root());
+    let (src, dest) = (resolve(src)?, resolve(dest)?);
+    if src.starts_with(&dest) || dest.starts_with(&src) {
+        return Err(Error::OverlappingVaults { src, dest });
+    }
+    Ok(())
+}
+
+fn same_contents(a: &Path, b: &Path) -> Result<bool> {
+    Ok(fs::read(a).ctx("read", a)? == fs::read(b).ctx("read", b)?)
 }
 
 fn mtime(path: &Path) -> Result<SystemTime> {
     fs::metadata(path)
         .and_then(|m| m.modified())
         .ctx("read mtime of", path)
+}
+
+/// The mtime of a note in the destination, or `None` if it isn't there.
+///
+/// Looking each note up directly is cheaper than walking the destination,
+/// which is usually the larger vault.
+fn dest_mtime(path: &Path) -> Result<Option<SystemTime>> {
+    match fs::metadata(path) {
+        Ok(meta) if meta.is_file() => meta.modified().map(Some).ctx("read mtime of", path),
+        Ok(_) => Ok(None),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).ctx("read mtime of", path),
+    }
 }
 
 /// Carries out the copies in `plan`.
@@ -269,7 +314,7 @@ pub fn apply(plan: SyncPlan, src: &Vault, dest: &Vault) -> SyncPlan {
         mut errors,
     } = plan;
     let applied: Report<Planned> = notes
-        .into_iter()
+        .into_par_iter()
         .map(|note| {
             let (from, to) = match note.action {
                 Action::Create | Action::Update => (src, dest),
@@ -293,6 +338,27 @@ pub fn apply(plan: SyncPlan, src: &Vault, dest: &Vault) -> SyncPlan {
 mod tests {
     use super::*;
     use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn rejects_overlapping_vaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for sub in ["a/inner", "b"] {
+            fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        let vault = |path: &str| Vault::open(root.join(path)).unwrap();
+
+        for (src, dest) in [("a", "a/inner"), ("a/inner", "a"), ("a", "a/inner/..")] {
+            assert!(
+                matches!(
+                    check_separate(&vault(src), &vault(dest)),
+                    Err(Error::OverlappingVaults { .. })
+                ),
+                "{src} {dest}"
+            );
+        }
+        check_separate(&vault("a"), &vault("b")).unwrap();
+    }
 
     #[test]
     fn summary_counts_each_action_once() {

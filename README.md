@@ -1,5 +1,6 @@
 # cog
-*Cân O Garreg* - *A Song of Stone*
+
+_Cân O Garreg_ - _A Song of Stone_
 
 Obsidian File Management & Analysis
 
@@ -25,31 +26,37 @@ work = "/path/to/work/vault"
 [sync]
 skip_dirs = ["templates", "bases"]                # never walked, in either vault
 exclude_dirs = ["meetings", "projects", "people"] # never synced from work
-exclude_tags = ["nbd", "no-sync", "client"]       # never synced from work
+exclude_tags = ["no-sync", "client"]       # never synced from work
 
 # Only needed for `cog steam`
 [steam]
 api_file = "steam_api.key"  # relative to this file
-id = 76561190000000000
+id = 123400000
 data_path = "/path/to/data"
 ```
 
 ## Commands
 
 - `cog sync` - syncs the work vault into the main vault.
-    - Notes only in work are copied over.
-    - Notes changed in only one vault since the last sync are copied to the other.
-    - Notes changed in both are reported as conflicts and left alone.
-    - `--dry-run` shows what would happen, `--no-back-update` stops changes in main being copied back to work.
+  - Notes only in work are copied over.
+  - Notes changed in only one vault since the last sync are copied to the other.
+  - Notes changed in both are reported as conflicts and left alone.
+  - `--dry-run` shows what would happen, `--no-back-update` stops changes in main being copied back to work.
+- `cog status` - shows when the vaults were last synced, what `cog sync` would do now, and any conflicts. Writes nothing. Takes `--no-back-update` like `sync`.
 - `cog title` - adds an H1 title from the filename to notes without one, dropping any `prefix - ` from the name. Defaults to the work vault.
 - `cog organise <tag>` - moves notes in the root of the main vault with `<tag>` into a directory named after the tag, or `--dir <name>`.
+- `cog check` - lists notes that Obsidian can't fully read: frontmatter that is unclosed or isn't valid YAML, and names or contents that aren't UTF-8. Exits with an error if it finds any. Defaults to the main vault.
+- `cog tags` - lists every tag in a vault with how many notes have it, most used first or `--sort name`. Defaults to the main vault.
+- `cog find --tag <tag>` - lists the notes with every given tag, one path per line, so the output can be piped. Repeat `--tag` for more, add `--any` to match any of them, or `--without <tag>` to leave notes out. Nested tags match their parents, so `--tag games` finds `#games/rpg`. Defaults to the main vault.
+- `cog links [broken|orphans]` - lists wikilinks to notes that don't exist, with the note each is in, or with `orphans` the notes that nothing links to. Links resolve as in Obsidian, by file name or the end of a path, ignoring case, headings, and aliases. Embeds count as links, and links to attachments such as images are skipped. `broken` exits with an error if it finds any. Defaults to the main vault.
 - `cog steam fetch` - saves the Steam player summary and owned games to `steam.data_path`.
 
-All commands take `-v` for more output and `-q` for less. `title` and `organise` also take `--dry-run` and `--vault main|work`.
+All commands take `-v` for more output and `-q` for less. `title` and `organise` also take `--dry-run`, and every command but `sync` and `steam` takes `--vault main|work`.
 
 ## Files
 
 - `~/.local/state/cog/state.toml` - time of the last sync, or the file in `COG_INFO_PATH`.
+- `~/.local/state/cog/state.lock` - held while a command changes a vault, so two runs can't overlap. It sits beside the state file, wherever that is.
 - `~/.local/state/cog/cog.log` - debug log of the last run.
 
 ## Python version

@@ -1,15 +1,17 @@
 //! Moving tagged notes into their own directory.
 
+use rayon::prelude::*;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use crate::error::{Error, IoContext, Result};
-use crate::note::Note;
+use crate::note::load_tags;
 use crate::report::Report;
 use crate::tags::Tag;
-use crate::vault::{NotePath, Vault};
+use crate::vault::{NotePath, Vault, is_hidden};
 
 /// Moving one note into the tag's directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,13 +61,14 @@ pub fn plan_moves(vault: &Vault, tag: &Tag, dir_name: Option<&str>) -> Result<Or
         .collect::<std::io::Result<Vec<_>>>()
         .ctx("read directory", vault.root())?
         .into_iter()
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "md"))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
         .filter_map(|path| path.file_name().map(OsStr::to_owned))
+        .filter(|name| !is_hidden(name))
         .collect();
     names.sort();
 
     let Report { done, errors } = names
-        .iter()
+        .par_iter()
         .map(|name| place(vault, tag, dir, name))
         .filter_map(Result::transpose)
         .collect();
@@ -83,15 +86,23 @@ pub fn plan_moves(vault: &Vault, tag: &Tag, dir_name: Option<&str>) -> Result<Or
     Ok(plan)
 }
 
-/// Where a root note goes, or `None` if it doesn't have the tag.
+/// Where a root note goes, or `None` if it isn't a file with the tag.
 fn place(vault: &Vault, tag: &Tag, dir: &Path, name: &OsStr) -> Result<Option<Placement>> {
     let from = NotePath::new(name);
-    let note = Note::load(&vault.resolve(&from))?;
-    if !note.tags.contains(tag) {
+    let full = vault.resolve(&from);
+    match fs::metadata(&full) {
+        Ok(meta) if meta.is_file() => {}
+        // Gone since the directory was read, or a dangling symlink
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Ok(_) => return Ok(None),
+        Err(e) => return Err(e).ctx("read metadata of", &full),
+    }
+    if !load_tags(&full)?.contains(tag) {
         return Ok(None);
     }
     let to = NotePath::new(dir.join(name));
-    Ok(Some(if vault.resolve(&to).exists() {
+    let target = vault.resolve(&to);
+    Ok(Some(if target.try_exists().ctx("check for", &target)? {
         Placement::Clash(from)
     } else {
         Placement::Move(Move { from, to })
@@ -111,16 +122,12 @@ pub fn apply_moves(vault: &Vault, plan: OrganisePlan) -> OrganisePlan {
     let mut done = Vec::new();
 
     for m in moves {
-        let (from, to) = (vault.resolve(&m.from), vault.resolve(&m.to));
-        if to.exists() {
-            clashes.push(m.from);
-            continue;
-        }
-        match move_file(&from, &to) {
-            Ok(()) => {
+        match move_file(&vault.resolve(&m.from), &vault.resolve(&m.to)) {
+            Ok(true) => {
                 tracing::info!("moved: {} -> {}", m.from, m.to);
                 done.push(m);
             }
+            Ok(false) => clashes.push(m.from),
             Err(e) => errors.push(e),
         }
     }
@@ -131,11 +138,22 @@ pub fn apply_moves(vault: &Vault, plan: OrganisePlan) -> OrganisePlan {
     }
 }
 
-fn move_file(from: &Path, to: &Path) -> Result<()> {
+/// Moves `from` to `to`, or returns `false` and moves nothing if anything is
+/// already at `to`.
+///
+/// `fs::rename` would silently replace a note that appeared after any check,
+/// whereas creating a hard link fails if the target exists, even as a
+/// dangling symlink. The original is removed once the link is in place.
+fn move_file(from: &Path, to: &Path) -> Result<bool> {
     if let Some(dir) = to.parent() {
         fs::create_dir_all(dir).ctx("create directory", dir)?;
     }
-    fs::rename(from, to).ctx("move", from)
+    match fs::hard_link(from, to) {
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => return Ok(false),
+        linked => linked.ctx("move", from)?,
+    }
+    fs::remove_file(from).ctx("remove the moved original", from)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -207,5 +225,41 @@ mod tests {
             fs::read_to_string(dir.path().join("game/a.md")).unwrap(),
             "new"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_target_dir_is_an_error_not_a_move() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "#game").unwrap();
+        let games = dir.path().join("game");
+        fs::create_dir(&games).unwrap();
+        fs::set_permissions(&games, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let plan = plan_moves(&vault, &game(), None).unwrap();
+        fs::set_permissions(&games, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(plan.moves.is_empty());
+        assert_eq!(plan.errors.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_at_target_is_a_clash() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "#game").unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+
+        let plan = plan_moves(&vault, &game(), None).unwrap();
+        fs::create_dir(dir.path().join("game")).unwrap();
+        let link = dir.path().join("game/a.md");
+        std::os::unix::fs::symlink("missing.md", &link).unwrap();
+        let plan = apply_moves(&vault, plan);
+
+        assert_eq!(plan.clashes, [NotePath::new("a.md")]);
+        assert!(dir.path().join("a.md").exists());
+        assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
     }
 }

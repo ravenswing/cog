@@ -4,8 +4,9 @@
 //! place, which is atomic on the same filesystem.
 
 use filetime::FileTime;
-use std::fs;
-use std::io::Write;
+use std::ffi::OsString;
+use std::fs::{self, File};
+use std::io::{self, ErrorKind, Write};
 use std::path::Path;
 use tempfile::NamedTempFile;
 
@@ -13,11 +14,17 @@ use crate::error::{IoContext, Result};
 
 /// Writes `contents` to `path`, keeping the permissions of any file it replaces.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
-    let mut tmp = temp_beside(path)?;
+    let permissions = match fs::metadata(path) {
+        Ok(meta) => Some(meta.permissions()),
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => return Err(e).ctx("read metadata of", path),
+    };
+    let mut tmp = temp_beside(path, permissions.clone())?;
     tmp.write_all(contents).ctx("write", tmp.path())?;
-    if let Ok(meta) = fs::metadata(path) {
+    // The umask may have narrowed the mode the temp file was created with
+    if let Some(permissions) = permissions {
         tmp.as_file()
-            .set_permissions(meta.permissions())
+            .set_permissions(permissions)
             .ctx("set permissions on", tmp.path())?;
     }
     persist(tmp, path)
@@ -28,13 +35,20 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
 /// Sync relies on copies keeping their mtime, otherwise every copied note
 /// would look modified on the next run.
 pub fn copy_preserving_mtime(src: &Path, dest: &Path) -> Result<()> {
-    let meta = fs::metadata(src).ctx("read metadata of", src)?;
-    let tmp = temp_beside(dest)?;
-    fs::copy(src, tmp.path()).ctx("copy to", tmp.path())?;
-    filetime::set_file_times(
-        tmp.path(),
-        FileTime::from_last_access_time(&meta),
-        FileTime::from_last_modification_time(&meta),
+    // Read everything through one handle, so the metadata and contents come
+    // from the same file even if the note is replaced part way through
+    let mut file = File::open(src).ctx("open", src)?;
+    let meta = file.metadata().ctx("read metadata of", src)?;
+    let mut tmp = temp_beside(dest, Some(meta.permissions()))?;
+    io::copy(&mut file, tmp.as_file_mut()).ctx("copy to", tmp.path())?;
+    // The umask may have narrowed the mode the temp file was created with
+    tmp.as_file()
+        .set_permissions(meta.permissions())
+        .ctx("set permissions on", tmp.path())?;
+    filetime::set_file_handle_times(
+        tmp.as_file(),
+        Some(FileTime::from_last_access_time(&meta)),
+        Some(FileTime::from_last_modification_time(&meta)),
     )
     .ctx("set times on", tmp.path())?;
     persist(tmp, dest)
@@ -44,21 +58,27 @@ pub fn copy_preserving_mtime(src: &Path, dest: &Path) -> Result<()> {
 ///
 /// The temp file is deleted when dropped, so an error part way through a
 /// write never leaves one behind.
-fn temp_beside(path: &Path) -> Result<NamedTempFile> {
+///
+/// It is created with `permissions`, before anything is written to it, so
+/// its contents are never readable by more users than the file it replaces.
+/// Without them the mode is left to the umask, as `fs::write` does, rather
+/// than tempfile's 0600.
+fn temp_beside(path: &Path, permissions: Option<fs::Permissions>) -> Result<NamedTempFile> {
     let parent = path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(parent).ctx("create directory", parent)?;
-    let prefix = format!(
-        ".{}.",
-        path.file_name().unwrap_or_default().to_string_lossy()
-    );
+    let mut prefix = OsString::from(".");
+    prefix.push(path.file_name().unwrap_or_default());
+    prefix.push(".");
 
     let mut builder = tempfile::Builder::new();
     builder.prefix(&prefix).suffix(".cog-tmp");
-    // Leave the mode to the umask, as `fs::write` does, rather than 0600
     #[cfg(unix)]
-    {
+    let permissions = {
         use std::os::unix::fs::PermissionsExt;
-        builder.permissions(fs::Permissions::from_mode(0o666));
+        permissions.or(Some(fs::Permissions::from_mode(0o666)))
+    };
+    if let Some(permissions) = permissions {
+        builder.permissions(permissions);
     }
     builder
         .tempfile_in(parent)
@@ -117,6 +137,17 @@ mod tests {
         fs::write(dir.path().join("reference.md"), "").unwrap();
         write_atomic(&dir.path().join("a.md"), b"").unwrap();
         assert_eq!(mode("a.md"), mode("reference.md"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temp_file_is_created_with_the_given_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let private = fs::Permissions::from_mode(0o600);
+        let tmp = temp_beside(&dir.path().join("a.md"), Some(private)).unwrap();
+        let mode = tmp.as_file().metadata().unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

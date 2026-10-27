@@ -1,16 +1,23 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use std::cmp::Reverse;
 use std::error::Error as StdError;
 use std::fs::{self, File};
+use std::io::{self, IsTerminal};
 use std::iter;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Mutex;
+use std::time::{Duration, UNIX_EPOCH};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::prelude::*;
 
+use cog::check::check_vault;
 use cog::config::Config;
+use cog::links::{Resolver, broken_links, linked_notes, orphans};
+use cog::lock::RunLock;
 use cog::organise::{apply_moves, plan_moves};
+use cog::query::{Match, TagQuery, count_tags, tagged_notes};
 use cog::state;
 use cog::sync::{Action, apply, plan_sync};
 use cog::tags::Tag;
@@ -50,6 +57,14 @@ enum Command {
         no_back_update: bool,
     },
 
+    /// Show when the vaults were last synced and what a sync would do now
+    Status {
+        /// Leave out notes that only changed in the main vault, as
+        /// `sync --no-back-update` would
+        #[arg(long)]
+        no_back_update: bool,
+    },
+
     /// Add an H1 title from the filename to notes without one
     Title {
         #[arg(long, value_enum, default_value_t = VaultName::Work)]
@@ -58,6 +73,48 @@ enum Command {
         /// Show which notes would be titled without changing them
         #[arg(long)]
         dry_run: bool,
+    },
+
+    /// List notes whose frontmatter Obsidian can't read, or that aren't UTF-8
+    Check {
+        #[arg(long, value_enum, default_value_t = VaultName::Main)]
+        vault: VaultName,
+    },
+
+    /// List every tag in a vault with how many notes have it
+    Tags {
+        #[arg(long, value_enum, default_value_t = VaultName::Main)]
+        vault: VaultName,
+
+        #[arg(long, value_enum, default_value_t = TagOrder::Count)]
+        sort: TagOrder,
+    },
+
+    /// List notes with the given tags, one path per line
+    Find {
+        /// Tag to look for, with or without the `#`. Repeat for more
+        #[arg(long = "tag", required = true)]
+        tags: Vec<Tag>,
+
+        /// Match notes with any of the tags, rather than all of them
+        #[arg(long)]
+        any: bool,
+
+        /// Leave out notes with this tag. Repeat for more
+        #[arg(long)]
+        without: Vec<Tag>,
+
+        #[arg(long, value_enum, default_value_t = VaultName::Main)]
+        vault: VaultName,
+    },
+
+    /// List broken wikilinks, or notes that nothing links to
+    Links {
+        #[arg(value_enum, default_value_t = LinkCheck::Broken)]
+        check: LinkCheck,
+
+        #[arg(long, value_enum, default_value_t = VaultName::Main)]
+        vault: VaultName,
     },
 
     /// Download data from the Steam Web API
@@ -88,6 +145,22 @@ enum Command {
 enum SteamCommand {
     /// Save the player summary and owned games to the configured data path
     Fetch,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum LinkCheck {
+    /// Links to notes that don't exist, with the note each is in
+    Broken,
+    /// Notes that no other note links to
+    Orphans,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum TagOrder {
+    /// Most used first
+    Count,
+    /// Alphabetical
+    Name,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -130,6 +203,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
             no_back_update,
         } => sync(&config, dry_run, !no_back_update),
+        Command::Status { no_back_update } => status(&config, !no_back_update),
         Command::Title { vault, dry_run } => title(&config, vault, dry_run),
         Command::Organise {
             tag,
@@ -137,12 +211,30 @@ fn run(cli: Cli) -> Result<ExitCode> {
             vault,
             dry_run,
         } => organise(&config, &tag, dir.as_deref(), vault, dry_run),
+        Command::Check { vault } => check(&config, vault),
+        Command::Tags { vault, sort } => tags(&config, vault, sort),
+        Command::Links { check, vault } => links(&config, check, vault),
+        Command::Find {
+            tags,
+            any,
+            without,
+            vault,
+        } => {
+            let mode = if any { Match::Any } else { Match::All };
+            let query = TagQuery {
+                tags,
+                mode,
+                without,
+            };
+            find(&config, vault, &query)
+        }
         #[cfg(feature = "steam")]
         Command::Steam(SteamCommand::Fetch) => steam_fetch(&config),
     }
 }
 
 fn title(config: &Config, vault: VaultName, dry_run: bool) -> Result<ExitCode> {
+    let _lock = lock_unless(dry_run)?;
     let vault = vault.open(config)?;
     let plan = plan_titles(&vault, &config.sync.skip_dirs)?;
 
@@ -162,6 +254,74 @@ fn title(config: &Config, vault: VaultName, dry_run: bool) -> Result<ExitCode> {
     Ok(exit_code(!report.has_errors()))
 }
 
+fn check(config: &Config, vault: VaultName) -> Result<ExitCode> {
+    let vault = vault.open(config)?;
+    let report = check_vault(&vault, &config.sync.skip_dirs)?;
+    for e in &report.errors {
+        tracing::warn!("{}", chain(e));
+    }
+    println!("{report}");
+    Ok(exit_code(!report.has_errors()))
+}
+
+fn tags(config: &Config, vault: VaultName, sort: TagOrder) -> Result<ExitCode> {
+    let vault = vault.open(config)?;
+    let report = tagged_notes(&vault, &config.sync.skip_dirs)?;
+    for e in &report.errors {
+        tracing::warn!("{}", chain(e));
+    }
+
+    let mut counts: Vec<_> = count_tags(&report.done).into_iter().collect();
+    if let TagOrder::Count = sort {
+        // Stable, so tags with the same count stay in name order
+        counts.sort_by_key(|&(_, count)| Reverse(count));
+    }
+    let width = counts.iter().map(|(_, n)| n.to_string().len()).max();
+    for (tag, count) in counts {
+        println!("{count:>width$}  #{tag}", width = width.unwrap_or(0));
+    }
+    Ok(exit_code(!report.has_errors()))
+}
+
+fn find(config: &Config, vault: VaultName, query: &TagQuery) -> Result<ExitCode> {
+    let vault = vault.open(config)?;
+    let report = tagged_notes(&vault, &config.sync.skip_dirs)?;
+    for e in &report.errors {
+        tracing::warn!("{}", chain(e));
+    }
+    for note in report.done.iter().filter(|note| query.matches(&note.tags)) {
+        println!("{}", note.path);
+    }
+    Ok(exit_code(!report.has_errors()))
+}
+
+fn links(config: &Config, check: LinkCheck, vault: VaultName) -> Result<ExitCode> {
+    let vault = vault.open(config)?;
+    let report = linked_notes(&vault, &config.sync.skip_dirs)?;
+    for e in &report.errors {
+        tracing::warn!("{}", chain(e));
+    }
+    let resolver = Resolver::new(report.done.iter().map(|note| &note.path));
+
+    let found = match check {
+        LinkCheck::Broken => {
+            let broken = broken_links(&report.done, &resolver);
+            for (path, link) in &broken {
+                println!("{path}: [[{link}]]");
+            }
+            !broken.is_empty()
+        }
+        LinkCheck::Orphans => {
+            for path in orphans(&report.done, &resolver) {
+                println!("{path}");
+            }
+            // Orphans are often deliberate, so finding some isn't a failure
+            false
+        }
+    };
+    Ok(exit_code(!found && !report.has_errors()))
+}
+
 fn organise(
     config: &Config,
     tag: &Tag,
@@ -169,6 +329,7 @@ fn organise(
     vault: VaultName,
     dry_run: bool,
 ) -> Result<ExitCode> {
+    let _lock = lock_unless(dry_run)?;
     let vault = vault.open(config)?;
     let plan = plan_moves(&vault, tag, dir)?;
 
@@ -207,6 +368,14 @@ fn steam_fetch(config: &Config) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Takes the run lock, unless this is a dry run, which changes nothing.
+fn lock_unless(dry_run: bool) -> Result<Option<RunLock>> {
+    if dry_run {
+        return Ok(None);
+    }
+    Ok(Some(RunLock::acquire(&state::default_path())?))
+}
+
 fn exit_code(success: bool) -> ExitCode {
     if success {
         ExitCode::SUCCESS
@@ -215,10 +384,48 @@ fn exit_code(success: bool) -> ExitCode {
     }
 }
 
+fn status(config: &Config, back_update: bool) -> Result<ExitCode> {
+    let src = Vault::open(&config.vaults.work)?;
+    let dest = Vault::open(&config.vaults.main)?;
+    let last_sync = state::read_last_sync(&state::default_path())?;
+    let plan = plan_sync(&src, &dest, last_sync, &config.sync, back_update)?;
+    for e in &plan.errors {
+        tracing::warn!("{}", chain(e));
+    }
+
+    let last = if last_sync == UNIX_EPOCH {
+        "never".to_owned()
+    } else {
+        // A sync time in the future means the clock went back since
+        let elapsed = last_sync.elapsed().unwrap_or_default();
+        ago(elapsed)
+    };
+    println!("Last sync: {last}");
+    println!("Next sync: {}", plan.summary());
+    for note in plan.notes.iter().filter(|n| n.action == Action::Conflict) {
+        println!("Conflict: {}", note.path);
+    }
+    Ok(exit_code(plan.errors.is_empty()))
+}
+
+/// Describes how long ago something happened, to the largest whole unit.
+fn ago(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    let (count, unit) = match secs {
+        0..60 => return "just now".to_owned(),
+        60..3600 => (secs / 60, "minute"),
+        3600..86400 => (secs / 3600, "hour"),
+        _ => (secs / 86400, "day"),
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} {unit}{plural} ago")
+}
+
 fn sync(config: &Config, dry_run: bool, back_update: bool) -> Result<ExitCode> {
     let src = Vault::open(&config.vaults.work)?;
     let dest = Vault::open(&config.vaults.main)?;
     let state_path = state::default_path();
+    let _lock = lock_unless(dry_run)?;
     let last_sync = state::read_last_sync(&state_path)?;
 
     tracing::info!(
@@ -241,8 +448,11 @@ fn sync(config: &Config, dry_run: bool, back_update: bool) -> Result<ExitCode> {
         plan
     } else {
         let plan = apply(plan, &src, &dest);
-        state::write_last_sync(&state_path, plan.started)
-            .context("synced, but failed to record the sync time")?;
+        match plan.completed_at() {
+            Some(time) => state::write_last_sync(&state_path, time)
+                .context("synced, but failed to record the sync time")?,
+            None => tracing::warn!("sync time not recorded, so failed notes are retried next run"),
+        }
         plan
     };
 
@@ -267,7 +477,9 @@ fn chain(e: &(dyn StdError + 'static)) -> String {
         .join(": ")
 }
 
-/// Logs to stdout at the requested level, and everything to a log file.
+/// Logs to stderr at the requested level, and everything to a log file.
+///
+/// Logging to stderr keeps stdout for results, so they can be piped.
 fn init_logging(cli: &Cli) -> Result<()> {
     let level = match (cli.quiet, cli.verbose) {
         (true, _) => LevelFilter::WARN,
@@ -275,7 +487,9 @@ fn init_logging(cli: &Cli) -> Result<()> {
         (false, 1) => LevelFilter::DEBUG,
         (false, _) => LevelFilter::TRACE,
     };
-    let stdout = tracing_subscriber::fmt::layer()
+    let stderr = tracing_subscriber::fmt::layer()
+        .with_writer(io::stderr)
+        .with_ansi(io::stderr().is_terminal())
         .without_time()
         .with_target(false)
         .with_filter(level);
@@ -298,14 +512,36 @@ fn init_logging(cli: &Cli) -> Result<()> {
                 .with_writer(Mutex::new(file))
                 .with_filter(LevelFilter::DEBUG);
             tracing_subscriber::registry()
-                .with(stdout)
+                .with(stderr)
                 .with(file_layer)
                 .init();
             Ok(())
         }
         Err(e) => {
-            tracing_subscriber::registry().with(stdout).init();
+            tracing_subscriber::registry().with(stderr).init();
             Err(e)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ago_uses_the_largest_whole_unit() {
+        let cases = [
+            (0, "just now"),
+            (59, "just now"),
+            (60, "1 minute ago"),
+            (150, "2 minutes ago"),
+            (3600, "1 hour ago"),
+            (86_399, "23 hours ago"),
+            (86_400, "1 day ago"),
+            (90 * 86_400, "90 days ago"),
+        ];
+        for (secs, expected) in cases {
+            assert_eq!(ago(Duration::from_secs(secs)), expected, "{secs}");
         }
     }
 }

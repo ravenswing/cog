@@ -39,29 +39,50 @@ impl Note {
 
     /// Builds a note from already-read contents.
     pub fn parse(path: &Path, content: &str, mtime: SystemTime) -> Result<Self> {
-        let Split {
-            frontmatter, body, ..
-        } = split_frontmatter(content).ok_or_else(|| Error::UnclosedFrontmatter {
-            path: path.to_owned(),
-        })?;
-
-        let yaml = frontmatter
-            .map(serde_norway::from_str::<Value>)
-            .transpose()
-            .map_err(|source| Error::Yaml {
-                path: path.to_owned(),
-                source,
-            })?;
+        let (
+            Split {
+                frontmatter, body, ..
+            },
+            tags,
+        ) = split_tags(path, content)?;
 
         Ok(Note {
             path: path.to_owned(),
             title: find_title(body).unwrap_or_else(|| stem(path)),
             frontmatter: frontmatter.map(str::to_owned),
             body: body.to_owned(),
-            tags: extract_tags(yaml.as_ref(), body),
+            tags,
             mtime,
         })
     }
+}
+
+/// Reads only the tags of the note at `path`.
+///
+/// Cheaper than [`Note::load`] when the tags are all that's needed, as
+/// nothing else is copied out of the file and its mtime isn't read.
+pub fn load_tags(path: &Path) -> Result<BTreeSet<Tag>> {
+    let content = fs::read_to_string(path).ctx("read", path)?;
+    split_tags(path, &content).map(|(_, tags)| tags)
+}
+
+/// Splits `content` around its frontmatter and collects its tags.
+fn split_tags<'a>(path: &Path, content: &'a str) -> Result<(Split<'a>, BTreeSet<Tag>)> {
+    let split = split_frontmatter(content).ok_or_else(|| Error::UnclosedFrontmatter {
+        path: path.to_owned(),
+    })?;
+
+    let yaml = split
+        .frontmatter
+        .map(serde_norway::from_str::<Value>)
+        .transpose()
+        .map_err(|source| Error::Yaml {
+            path: path.to_owned(),
+            source,
+        })?;
+
+    let tags = extract_tags(yaml.as_ref(), split.body);
+    Ok((split, tags))
 }
 
 /// A note's contents, split around its frontmatter.
@@ -93,18 +114,18 @@ pub fn split_frontmatter(content: &str) -> Option<Split<'_>> {
     };
 
     let rest = content.strip_prefix(opening)?;
-    let mut frontmatter_len = 0;
+    // Everything from the current line on
+    let mut closing = rest;
     for line in rest.split_inclusive('\n') {
         if line.trim() == "---" {
-            let (frontmatter, closing) = rest.split_at_checked(frontmatter_len)?;
             let body = closing.strip_prefix(line)?;
             return Some(Split {
                 header: content.strip_suffix(body)?,
-                frontmatter: Some(frontmatter),
+                frontmatter: Some(rest.strip_suffix(closing)?),
                 body,
             });
         }
-        frontmatter_len += line.len();
+        closing = closing.strip_prefix(line)?;
     }
     None
 }
@@ -178,6 +199,23 @@ mod tests {
         let note = parse("---\ntags: [a]\n---\n#b\n").unwrap();
         let tags: Vec<&str> = note.tags.iter().map(Tag::as_str).collect();
         assert_eq!(tags, ["a", "b"]);
+    }
+
+    #[test]
+    fn loads_tags_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.md");
+        fs::write(&path, "---\ntags: [a]\n---\n#b\n").unwrap();
+        assert_eq!(
+            load_tags(&path).unwrap(),
+            parse("---\ntags: [a]\n---\n#b\n").unwrap().tags
+        );
+
+        fs::write(&path, "---\nunclosed").unwrap();
+        assert!(matches!(
+            load_tags(&path),
+            Err(Error::UnclosedFrontmatter { .. })
+        ));
     }
 
     #[test]

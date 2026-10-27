@@ -49,8 +49,8 @@ unwrap_in_result = "warn"
 unchecked_time_subtraction = "warn"
 panic_in_result_fn = "warn"
 # Optional - see post for caveats
-# expect_used = "warn"
-# arithmetic_side_effects = "warn"
+expect_used = "warn"
+arithmetic_side_effects = "warn"
 
 # Don't Fail Silently - prevent dropped futures and swallowed errors
 let_underscore_future = "warn"

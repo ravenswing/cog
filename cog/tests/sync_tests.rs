@@ -58,9 +58,17 @@ impl Fixture {
     fn sync(&mut self) -> SyncPlan {
         let plan = self.plan(true);
         let planning_errors = plan.errors.len();
-        let plan = apply(plan, &self.src, &self.dest);
+        let plan = self.apply(plan);
         assert_eq!(plan.errors.len(), planning_errors, "a copy failed");
-        self.last_sync = plan.started;
+        plan
+    }
+
+    /// Applies `plan`, recording the sync time as `main` does.
+    fn apply(&mut self, plan: SyncPlan) -> SyncPlan {
+        let plan = apply(plan, &self.src, &self.dest);
+        if let Some(time) = plan.completed_at() {
+            self.last_sync = time;
+        }
         plan
     }
 
@@ -74,7 +82,9 @@ impl Fixture {
 }
 
 fn ago(mins: u64) -> SystemTime {
-    SystemTime::now() - Duration::from_secs(mins * 60)
+    SystemTime::now()
+        .checked_sub(Duration::from_mins(mins))
+        .unwrap()
 }
 
 fn read(vault: &Vault, path: &str) -> String {
@@ -145,6 +155,19 @@ fn leaves_conflicts_alone() {
 }
 
 #[test]
+fn different_edits_with_the_same_mtime_are_conflicts() {
+    let mut f = Fixture::new();
+    f.write(&f.src, "a.md", "src", 10);
+    f.write(&f.dest, "a.md", "dest", 10);
+    let (src, dest) = (f.src.root().join("a.md"), f.dest.root().join("a.md"));
+    let time = FileTime::from_last_modification_time(&fs::metadata(&src).unwrap());
+    filetime::set_file_mtime(&dest, time).unwrap();
+
+    let plan = f.sync();
+    assert_eq!(Fixture::action(&plan, "a.md"), Action::Conflict);
+}
+
+#[test]
 fn skips_unchanged_notes() {
     let f = Fixture::new();
     f.write(&f.src, "a.md", "same", 120);
@@ -200,6 +223,52 @@ fn bad_notes_are_reported_and_others_still_sync() {
     assert_eq!(plan.errors.len(), 1);
     assert!(!f.dest.root().join("bad.md").exists());
     assert_eq!(read(&f.dest, "good.md"), "fine");
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_copies_are_retried_next_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let set_mode = |vault: &Vault, mode| {
+        fs::set_permissions(vault.root(), fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let mut f = Fixture::new();
+    f.write(&f.src, "a.md", "new", 10);
+    f.write(&f.dest, "a.md", "old", 120);
+
+    set_mode(&f.dest, 0o555);
+    let plan = f.plan(true);
+    let plan = f.apply(plan);
+    set_mode(&f.dest, 0o755);
+    assert_eq!(plan.errors.len(), 1);
+
+    let plan = f.sync();
+    assert_eq!(Fixture::action(&plan, "a.md"), Action::Update);
+    assert_eq!(read(&f.dest, "a.md"), "new");
+}
+
+#[cfg(unix)]
+#[test]
+fn notes_copied_in_a_failed_run_are_not_conflicts() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut f = Fixture::new();
+    f.write(&f.src, "a.md", "new", 10);
+    f.write(&f.src, "sub/b.md", "new", 10);
+    f.write(&f.dest, "sub/b.md", "old", 120);
+    let sub = f.dest.root().join("sub");
+
+    fs::set_permissions(&sub, fs::Permissions::from_mode(0o555)).unwrap();
+    let plan = f.plan(true);
+    let plan = f.apply(plan);
+    fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(plan.errors.len(), 1);
+
+    let plan = f.sync();
+    assert_eq!(
+        Fixture::action(&plan, "a.md"),
+        Action::Skip(SkipReason::Unchanged)
+    );
+    assert_eq!(Fixture::action(&plan, "sub/b.md"), Action::Update);
 }
 
 #[test]
