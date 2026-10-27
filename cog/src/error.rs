@@ -45,6 +45,9 @@ pub enum Error {
         source: serde_norway::Error,
     },
 
+    #[error("{path} has a name that isn't valid UTF-8")]
+    NonUtf8Name { path: PathBuf },
+
     #[error("{path} is not a directory")]
     NotADirectory { path: PathBuf },
 

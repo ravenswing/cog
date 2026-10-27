@@ -4,6 +4,7 @@
 //! place, which is atomic on the same filesystem.
 
 use filetime::FileTime;
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, ErrorKind, Write};
 use std::path::Path;
@@ -65,10 +66,9 @@ pub fn copy_preserving_mtime(src: &Path, dest: &Path) -> Result<()> {
 fn temp_beside(path: &Path, permissions: Option<fs::Permissions>) -> Result<NamedTempFile> {
     let parent = path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(parent).ctx("create directory", parent)?;
-    let prefix = format!(
-        ".{}.",
-        path.file_name().unwrap_or_default().to_string_lossy()
-    );
+    let mut prefix = OsString::from(".");
+    prefix.push(path.file_name().unwrap_or_default());
+    prefix.push(".");
 
     let mut builder = tempfile::Builder::new();
     builder.prefix(&prefix).suffix(".cog-tmp");

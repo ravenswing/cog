@@ -73,7 +73,9 @@ pub fn apply_titles(vault: &Vault, plan: Report<TitleEdit>) -> Report<TitleEdit>
 
 /// Excalidraw drawings are stored as Markdown, but aren't notes to title.
 fn is_drawing(path: &NotePath) -> bool {
-    path.as_path().to_string_lossy().ends_with(".excalidraw.md")
+    path.as_path()
+        .file_name()
+        .is_some_and(|name| name.as_encoded_bytes().ends_with(b".excalidraw.md"))
 }
 
 /// Returns `content` with a title inserted after the frontmatter, or `None`
@@ -92,8 +94,15 @@ pub fn with_title(path: &Path, content: &str) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    let base = stem.split_once(" - ").map_or(&*stem, |(_, rest)| rest);
+    // A lossy conversion would write U+FFFD into the note
+    let stem = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_str()
+        .ok_or_else(|| Error::NonUtf8Name {
+            path: path.to_owned(),
+        })?;
+    let base = stem.split_once(" - ").map_or(stem, |(_, rest)| rest);
     let mut chars = base.chars();
     let title: String = chars
         .next()
@@ -185,6 +194,18 @@ mod tests {
             fs::read_to_string(dir.path().join("a.md")).unwrap(),
             "# A\nbody"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_names_that_are_not_utf8() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let path = Path::new(OsStr::from_bytes(b"bad\xffname.md"));
+        assert!(matches!(
+            with_title(path, "body"),
+            Err(Error::NonUtf8Name { .. })
+        ));
     }
 
     #[test]
