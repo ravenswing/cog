@@ -155,6 +155,19 @@ fn leaves_conflicts_alone() {
 }
 
 #[test]
+fn different_edits_with_the_same_mtime_are_conflicts() {
+    let mut f = Fixture::new();
+    f.write(&f.src, "a.md", "src", 10);
+    f.write(&f.dest, "a.md", "dest", 10);
+    let (src, dest) = (f.src.root().join("a.md"), f.dest.root().join("a.md"));
+    let time = FileTime::from_last_modification_time(&fs::metadata(&src).unwrap());
+    filetime::set_file_mtime(&dest, time).unwrap();
+
+    let plan = f.sync();
+    assert_eq!(Fixture::action(&plan, "a.md"), Action::Conflict);
+}
+
+#[test]
 fn skips_unchanged_notes() {
     let f = Fixture::new();
     f.write(&f.src, "a.md", "same", 120);

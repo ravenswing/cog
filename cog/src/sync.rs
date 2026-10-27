@@ -6,8 +6,9 @@
 //!
 //! Whether a note changed is judged by comparing its mtime with the time of
 //! the last sync. Copies keep the source's mtime, so a note that was just
-//! copied is seen as unchanged on the next run, even if that run's sync time
-//! wasn't recorded.
+//! copied is seen as unchanged on the next run. If that run's sync time
+//! wasn't recorded, both copies look changed, so a note whose copies have
+//! the same mtime and contents is treated as unchanged too.
 
 use rayon::prelude::*;
 use std::fmt;
@@ -36,12 +37,8 @@ pub enum Change {
 /// Compares both copies of a note against the last sync time.
 ///
 /// A note counts as changed only if its mtime is strictly after the last
-/// sync. Copies with the same mtime are one copied by an earlier sync, so
-/// neither has changed.
+/// sync.
 pub fn change(src: SystemTime, dest: SystemTime, last_sync: SystemTime) -> Change {
-    if src == dest {
-        return Change::Neither;
-    }
     match (src > last_sync, dest > last_sync) {
         (false, false) => Change::Neither,
         (true, false) => Change::Source,
@@ -228,14 +225,24 @@ impl Planner<'_> {
         }
 
         // Check mtimes first, so unchanged notes are never read
-        let action = match dest_mtime(&self.dest.resolve(path))? {
-            Some(dest) => match change(mtime(&self.src.resolve(path))?, dest, self.last_sync) {
-                Change::Neither => return Ok(Action::Skip(SkipReason::Unchanged)),
-                Change::Source => Action::Update,
-                Change::Destination if self.back_update => Action::BackUpdate,
-                Change::Destination => Action::Skip(SkipReason::DestinationNewer),
-                Change::Both => Action::Conflict,
-            },
+        let (src_path, dest_path) = (self.src.resolve(path), self.dest.resolve(path));
+        let action = match dest_mtime(&dest_path)? {
+            Some(dest) => {
+                let src = mtime(&src_path)?;
+                match change(src, dest, self.last_sync) {
+                    Change::Neither => return Ok(Action::Skip(SkipReason::Unchanged)),
+                    Change::Source => Action::Update,
+                    Change::Destination if self.back_update => Action::BackUpdate,
+                    Change::Destination => Action::Skip(SkipReason::DestinationNewer),
+                    // A copy from a sync whose time wasn't recorded. The
+                    // mtime clock is coarse, so two separate edits can share
+                    // an mtime too, and only the contents tell them apart
+                    Change::Both if src == dest && same_contents(&src_path, &dest_path)? => {
+                        return Ok(Action::Skip(SkipReason::Unchanged));
+                    }
+                    Change::Both => Action::Conflict,
+                }
+            }
             None => Action::Create,
         };
 
@@ -271,6 +278,10 @@ fn check_separate(src: &Vault, dest: &Vault) -> Result<()> {
         return Err(Error::OverlappingVaults { src, dest });
     }
     Ok(())
+}
+
+fn same_contents(a: &Path, b: &Path) -> Result<bool> {
+    Ok(fs::read(a).ctx("read", a)? == fs::read(b).ctx("read", b)?)
 }
 
 fn mtime(path: &Path) -> Result<SystemTime> {
@@ -382,7 +393,7 @@ mod tests {
             (at(150), at(50), Change::Source),
             (at(150), at(100), Change::Source),
             (at(50), at(150), Change::Destination),
-            (at(150), at(150), Change::Neither),
+            (at(150), at(150), Change::Both),
             (at(150), at(200), Change::Both),
         ];
         for (src, dest, expected) in cases {
