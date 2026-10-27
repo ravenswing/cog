@@ -14,6 +14,7 @@ use tracing_subscriber::prelude::*;
 
 use cog::check::check_vault;
 use cog::config::Config;
+use cog::links::{Resolver, broken_links, linked_notes, orphans};
 use cog::lock::RunLock;
 use cog::organise::{apply_moves, plan_moves};
 use cog::query::{Match, TagQuery, count_tags, tagged_notes};
@@ -107,6 +108,15 @@ enum Command {
         vault: VaultName,
     },
 
+    /// List broken wikilinks, or notes that nothing links to
+    Links {
+        #[arg(value_enum, default_value_t = LinkCheck::Broken)]
+        check: LinkCheck,
+
+        #[arg(long, value_enum, default_value_t = VaultName::Main)]
+        vault: VaultName,
+    },
+
     /// Download data from the Steam Web API
     #[cfg(feature = "steam")]
     #[command(subcommand)]
@@ -135,6 +145,14 @@ enum Command {
 enum SteamCommand {
     /// Save the player summary and owned games to the configured data path
     Fetch,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum LinkCheck {
+    /// Links to notes that don't exist, with the note each is in
+    Broken,
+    /// Notes that no other note links to
+    Orphans,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -195,6 +213,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         } => organise(&config, &tag, dir.as_deref(), vault, dry_run),
         Command::Check { vault } => check(&config, vault),
         Command::Tags { vault, sort } => tags(&config, vault, sort),
+        Command::Links { check, vault } => links(&config, check, vault),
         Command::Find {
             tags,
             any,
@@ -274,6 +293,33 @@ fn find(config: &Config, vault: VaultName, query: &TagQuery) -> Result<ExitCode>
         println!("{}", note.path);
     }
     Ok(exit_code(!report.has_errors()))
+}
+
+fn links(config: &Config, check: LinkCheck, vault: VaultName) -> Result<ExitCode> {
+    let vault = vault.open(config)?;
+    let report = linked_notes(&vault, &config.sync.skip_dirs)?;
+    for e in &report.errors {
+        tracing::warn!("{}", chain(e));
+    }
+    let resolver = Resolver::new(report.done.iter().map(|note| &note.path));
+
+    let found = match check {
+        LinkCheck::Broken => {
+            let broken = broken_links(&report.done, &resolver);
+            for (path, link) in &broken {
+                println!("{path}: [[{link}]]");
+            }
+            !broken.is_empty()
+        }
+        LinkCheck::Orphans => {
+            for path in orphans(&report.done, &resolver) {
+                println!("{path}");
+            }
+            // Orphans are often deliberate, so finding some isn't a failure
+            false
+        }
+    };
+    Ok(exit_code(!found && !report.has_errors()))
 }
 
 fn organise(

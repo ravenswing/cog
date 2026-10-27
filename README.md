@@ -48,6 +48,7 @@ data_path = "/path/to/data"
 - `cog check` - lists notes that Obsidian can't fully read: frontmatter that is unclosed or isn't valid YAML, and names or contents that aren't UTF-8. Exits with an error if it finds any. Defaults to the main vault.
 - `cog tags` - lists every tag in a vault with how many notes have it, most used first or `--sort name`. Defaults to the main vault.
 - `cog find --tag <tag>` - lists the notes with every given tag, one path per line, so the output can be piped. Repeat `--tag` for more, add `--any` to match any of them, or `--without <tag>` to leave notes out. Nested tags match their parents, so `--tag games` finds `#games/rpg`. Defaults to the main vault.
+- `cog links [broken|orphans]` - lists wikilinks to notes that don't exist, with the note each is in, or with `orphans` the notes that nothing links to. Links resolve as in Obsidian, by file name or the end of a path, ignoring case, headings, and aliases. Embeds count as links, and links to attachments such as images are skipped. `broken` exits with an error if it finds any. Defaults to the main vault.
 - `cog steam fetch` - saves the Steam player summary and owned games to `steam.data_path`.
 
 All commands take `-v` for more output and `-q` for less. `title` and `organise` also take `--dry-run`, and every command but `sync` and `steam` takes `--vault main|work`.
