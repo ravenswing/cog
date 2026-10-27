@@ -54,7 +54,7 @@ All commands take `-v` for more output and `-q` for less. `title` and `organise`
 
 ## Python version
 
-`py/` holds the original Python implementation, kept for benchmarking against the Rust version. It is no longer developed.
+`py/` holds the original Python implementation, kept for benchmarking against the Rust version. It is no longer developed. It reads the same config and state files as the Rust version, so a sync by either moves the shared last sync time on.
 
 ## Data analysis
 
