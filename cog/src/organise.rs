@@ -4,6 +4,7 @@ use rayon::prelude::*;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use crate::error::{Error, IoContext, Result};
@@ -111,16 +112,12 @@ pub fn apply_moves(vault: &Vault, plan: OrganisePlan) -> OrganisePlan {
     let mut done = Vec::new();
 
     for m in moves {
-        let (from, to) = (vault.resolve(&m.from), vault.resolve(&m.to));
-        if to.exists() {
-            clashes.push(m.from);
-            continue;
-        }
-        match move_file(&from, &to) {
-            Ok(()) => {
+        match move_file(&vault.resolve(&m.from), &vault.resolve(&m.to)) {
+            Ok(true) => {
                 tracing::info!("moved: {} -> {}", m.from, m.to);
                 done.push(m);
             }
+            Ok(false) => clashes.push(m.from),
             Err(e) => errors.push(e),
         }
     }
@@ -131,11 +128,22 @@ pub fn apply_moves(vault: &Vault, plan: OrganisePlan) -> OrganisePlan {
     }
 }
 
-fn move_file(from: &Path, to: &Path) -> Result<()> {
+/// Moves `from` to `to`, or returns `false` and moves nothing if anything is
+/// already at `to`.
+///
+/// `fs::rename` would silently replace a note that appeared after any check,
+/// whereas creating a hard link fails if the target exists, even as a
+/// dangling symlink. The original is removed once the link is in place.
+fn move_file(from: &Path, to: &Path) -> Result<bool> {
     if let Some(dir) = to.parent() {
         fs::create_dir_all(dir).ctx("create directory", dir)?;
     }
-    fs::rename(from, to).ctx("move", from)
+    match fs::hard_link(from, to) {
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => return Ok(false),
+        linked => linked.ctx("move", from)?,
+    }
+    fs::remove_file(from).ctx("remove the moved original", from)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -207,5 +215,23 @@ mod tests {
             fs::read_to_string(dir.path().join("game/a.md")).unwrap(),
             "new"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_at_target_is_a_clash() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "#game").unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+
+        let plan = plan_moves(&vault, &game(), None).unwrap();
+        fs::create_dir(dir.path().join("game")).unwrap();
+        let link = dir.path().join("game/a.md");
+        std::os::unix::fs::symlink("missing.md", &link).unwrap();
+        let plan = apply_moves(&vault, plan);
+
+        assert_eq!(plan.clashes, [NotePath::new("a.md")]);
+        assert!(dir.path().join("a.md").exists());
+        assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
     }
 }
