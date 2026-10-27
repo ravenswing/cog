@@ -1,3 +1,7 @@
+# User defined
+.claude
+**/personal_data
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -24,8 +28,6 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
-**/personal_data
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
