@@ -241,8 +241,11 @@ fn sync(config: &Config, dry_run: bool, back_update: bool) -> Result<ExitCode> {
         plan
     } else {
         let plan = apply(plan, &src, &dest);
-        state::write_last_sync(&state_path, plan.started)
-            .context("synced, but failed to record the sync time")?;
+        match plan.completed_at() {
+            Some(time) => state::write_last_sync(&state_path, time)
+                .context("synced, but failed to record the sync time")?,
+            None => tracing::warn!("sync time not recorded, so failed notes are retried next run"),
+        }
         plan
     };
 

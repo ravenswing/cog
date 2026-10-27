@@ -110,6 +110,14 @@ pub struct SyncPlan {
 }
 
 impl SyncPlan {
+    /// The time to record as the last sync, or `None` if any note failed.
+    ///
+    /// Recording a sync with failures would make the failed notes look
+    /// unchanged on the next run, so they would never be retried.
+    pub fn completed_at(&self) -> Option<SystemTime> {
+        self.errors.is_empty().then_some(self.started)
+    }
+
     /// How many notes have each action, and how many failed.
     pub fn summary(&self) -> Summary {
         let summary = Summary {
