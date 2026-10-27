@@ -5,7 +5,7 @@
 
 use filetime::FileTime;
 use std::fs;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 use tempfile::NamedTempFile;
 
@@ -13,7 +13,11 @@ use crate::error::{IoContext, Result};
 
 /// Writes `contents` to `path`, keeping the permissions of any file it replaces.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
-    let permissions = fs::metadata(path).ok().map(|meta| meta.permissions());
+    let permissions = match fs::metadata(path) {
+        Ok(meta) => Some(meta.permissions()),
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => return Err(e).ctx("read metadata of", path),
+    };
     let mut tmp = temp_beside(path, permissions.clone())?;
     tmp.write_all(contents).ctx("write", tmp.path())?;
     // The umask may have narrowed the mode the temp file was created with

@@ -61,7 +61,7 @@ pub fn plan_moves(vault: &Vault, tag: &Tag, dir_name: Option<&str>) -> Result<Or
         .collect::<std::io::Result<Vec<_>>>()
         .ctx("read directory", vault.root())?
         .into_iter()
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "md"))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
         .filter_map(|path| path.file_name().map(OsStr::to_owned))
         .collect();
     names.sort();
@@ -85,14 +85,23 @@ pub fn plan_moves(vault: &Vault, tag: &Tag, dir_name: Option<&str>) -> Result<Or
     Ok(plan)
 }
 
-/// Where a root note goes, or `None` if it doesn't have the tag.
+/// Where a root note goes, or `None` if it isn't a file with the tag.
 fn place(vault: &Vault, tag: &Tag, dir: &Path, name: &OsStr) -> Result<Option<Placement>> {
     let from = NotePath::new(name);
-    if !load_tags(&vault.resolve(&from))?.contains(tag) {
+    let full = vault.resolve(&from);
+    match fs::metadata(&full) {
+        Ok(meta) if meta.is_file() => {}
+        // Gone since the directory was read, or a dangling symlink
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Ok(_) => return Ok(None),
+        Err(e) => return Err(e).ctx("read metadata of", &full),
+    }
+    if !load_tags(&full)?.contains(tag) {
         return Ok(None);
     }
     let to = NotePath::new(dir.join(name));
-    Ok(Some(if vault.resolve(&to).exists() {
+    let target = vault.resolve(&to);
+    Ok(Some(if target.try_exists().ctx("check for", &target)? {
         Placement::Clash(from)
     } else {
         Placement::Move(Move { from, to })
@@ -215,6 +224,24 @@ mod tests {
             fs::read_to_string(dir.path().join("game/a.md")).unwrap(),
             "new"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_target_dir_is_an_error_not_a_move() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "#game").unwrap();
+        let games = dir.path().join("game");
+        fs::create_dir(&games).unwrap();
+        fs::set_permissions(&games, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let vault = Vault::open(dir.path()).unwrap();
+        let plan = plan_moves(&vault, &game(), None).unwrap();
+        fs::set_permissions(&games, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(plan.moves.is_empty());
+        assert_eq!(plan.errors.len(), 1);
     }
 
     #[cfg(unix)]
