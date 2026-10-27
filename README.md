@@ -44,9 +44,10 @@ data_path = "/path/to/data"
   - `--dry-run` shows what would happen, `--no-back-update` stops changes in main being copied back to work.
 - `cog title` - adds an H1 title from the filename to notes without one, dropping any `prefix - ` from the name. Defaults to the work vault.
 - `cog organise <tag>` - moves notes in the root of the main vault with `<tag>` into a directory named after the tag, or `--dir <name>`.
+- `cog check` - lists notes that Obsidian can't fully read: frontmatter that is unclosed or isn't valid YAML, and names or contents that aren't UTF-8. Exits with an error if it finds any. Defaults to the main vault.
 - `cog steam fetch` - saves the Steam player summary and owned games to `steam.data_path`.
 
-All commands take `-v` for more output and `-q` for less. `title` and `organise` also take `--dry-run` and `--vault main|work`.
+All commands take `-v` for more output and `-q` for less. `title` and `organise` also take `--dry-run`, and every command but `sync` and `steam` takes `--vault main|work`.
 
 ## Files
 

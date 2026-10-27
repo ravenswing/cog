@@ -1,5 +1,6 @@
 //! Obsidian vault management: syncing, tagging, and tidying notes.
 
+pub mod check;
 pub mod config;
 pub mod error;
 pub mod fsutil;

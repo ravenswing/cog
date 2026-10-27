@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::prelude::*;
 
+use cog::check::check_vault;
 use cog::config::Config;
 use cog::lock::RunLock;
 use cog::organise::{apply_moves, plan_moves};
@@ -59,6 +60,12 @@ enum Command {
         /// Show which notes would be titled without changing them
         #[arg(long)]
         dry_run: bool,
+    },
+
+    /// List notes whose frontmatter Obsidian can't read, or that aren't UTF-8
+    Check {
+        #[arg(long, value_enum, default_value_t = VaultName::Main)]
+        vault: VaultName,
     },
 
     /// Download data from the Steam Web API
@@ -138,6 +145,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             vault,
             dry_run,
         } => organise(&config, &tag, dir.as_deref(), vault, dry_run),
+        Command::Check { vault } => check(&config, vault),
         #[cfg(feature = "steam")]
         Command::Steam(SteamCommand::Fetch) => steam_fetch(&config),
     }
@@ -161,6 +169,16 @@ fn title(config: &Config, vault: VaultName, dry_run: bool) -> Result<ExitCode> {
         tracing::error!("{}", chain(e));
     }
     println!("{}{report}", if dry_run { "Dry run: " } else { "" });
+    Ok(exit_code(!report.has_errors()))
+}
+
+fn check(config: &Config, vault: VaultName) -> Result<ExitCode> {
+    let vault = vault.open(config)?;
+    let report = check_vault(&vault, &config.sync.skip_dirs)?;
+    for e in &report.errors {
+        tracing::warn!("{}", chain(e));
+    }
+    println!("{report}");
     Ok(exit_code(!report.has_errors()))
 }
 
