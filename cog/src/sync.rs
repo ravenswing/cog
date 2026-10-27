@@ -275,7 +275,7 @@ pub fn apply(plan: SyncPlan, src: &Vault, dest: &Vault) -> SyncPlan {
         mut errors,
     } = plan;
     let applied: Report<Planned> = notes
-        .into_iter()
+        .into_par_iter()
         .map(|note| {
             let (from, to) = match note.action {
                 Action::Create | Action::Update => (src, dest),
