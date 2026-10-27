@@ -51,6 +51,7 @@ All commands take `-v` for more output and `-q` for less. `title` and `organise`
 ## Files
 
 - `~/.local/state/cog/state.toml` - time of the last sync, or the file in `COG_INFO_PATH`.
+- `~/.local/state/cog/state.lock` - held while a command changes a vault, so two runs can't overlap. It sits beside the state file, wherever that is.
 - `~/.local/state/cog/cog.log` - debug log of the last run.
 
 ## Python version

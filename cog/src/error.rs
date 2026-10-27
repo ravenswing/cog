@@ -29,6 +29,9 @@ pub enum Error {
     #[error("invalid last sync time {value} in {path}")]
     LastSync { path: PathBuf, value: f64 },
 
+    #[error("another cog run is in progress, it holds the lock on {path}")]
+    Locked { path: PathBuf },
+
     #[error("failed to encode the state file")]
     StateEncode(#[source] toml::ser::Error),
 

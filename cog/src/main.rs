@@ -10,6 +10,7 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::prelude::*;
 
 use cog::config::Config;
+use cog::lock::RunLock;
 use cog::organise::{apply_moves, plan_moves};
 use cog::state;
 use cog::sync::{Action, apply, plan_sync};
@@ -143,6 +144,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 fn title(config: &Config, vault: VaultName, dry_run: bool) -> Result<ExitCode> {
+    let _lock = lock_unless(dry_run)?;
     let vault = vault.open(config)?;
     let plan = plan_titles(&vault, &config.sync.skip_dirs)?;
 
@@ -169,6 +171,7 @@ fn organise(
     vault: VaultName,
     dry_run: bool,
 ) -> Result<ExitCode> {
+    let _lock = lock_unless(dry_run)?;
     let vault = vault.open(config)?;
     let plan = plan_moves(&vault, tag, dir)?;
 
@@ -207,6 +210,14 @@ fn steam_fetch(config: &Config) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Takes the run lock, unless this is a dry run, which changes nothing.
+fn lock_unless(dry_run: bool) -> Result<Option<RunLock>> {
+    if dry_run {
+        return Ok(None);
+    }
+    Ok(Some(RunLock::acquire(&state::default_path())?))
+}
+
 fn exit_code(success: bool) -> ExitCode {
     if success {
         ExitCode::SUCCESS
@@ -219,6 +230,7 @@ fn sync(config: &Config, dry_run: bool, back_update: bool) -> Result<ExitCode> {
     let src = Vault::open(&config.vaults.work)?;
     let dest = Vault::open(&config.vaults.main)?;
     let state_path = state::default_path();
+    let _lock = lock_unless(dry_run)?;
     let last_sync = state::read_last_sync(&state_path)?;
 
     tracing::info!(

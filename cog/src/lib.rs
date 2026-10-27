@@ -3,6 +3,7 @@
 pub mod config;
 pub mod error;
 pub mod fsutil;
+pub mod lock;
 pub mod note;
 pub mod organise;
 pub mod report;
