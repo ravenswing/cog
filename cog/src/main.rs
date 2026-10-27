@@ -1,263 +1,311 @@
 use anyhow::{Context, Result};
-use colored::Colorize;
-use regex::Regex;
-use serde::Deserialize;
-use serde_yaml::Value;
-use std::cmp::min;
-use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+use clap::{Parser, Subcommand, ValueEnum};
+use std::error::Error as StdError;
+use std::fs::{self, File};
+use std::iter;
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::sync::Mutex;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::prelude::*;
 
-// Define a struct that matches the expected structure of your TOML file
-#[derive(Deserialize)]
-struct Config {
-    vault: String,
-    work_vault: String,
-    // api_file: String,
-    // steam_id: u64,
-    // steam_user: String,
-    // friend_id: u64,
+use cog::config::Config;
+use cog::organise::{apply_moves, plan_moves};
+use cog::state;
+use cog::sync::{Action, apply, plan_sync};
+use cog::tags::Tag;
+use cog::title::{apply_titles, plan_titles};
+use cog::vault::Vault;
+
+/// Obsidian vault management.
+#[derive(Parser)]
+#[command(version)]
+struct Cli {
+    /// Config file [default: $COG_CONFIG_PATH or ~/.config/cog/cog.toml]
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+
+    /// Show more output (repeat for even more)
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
+
+    /// Only show warnings and errors
+    #[arg(short, long, global = true, conflicts_with = "verbose")]
+    quiet: bool,
+
+    #[command(subcommand)]
+    command: Command,
 }
 
-fn add_inline_title(note: &Path) -> Result<()> {
-    let content = fs::read_to_string(note).with_context(|| {
-        format!(
-            "{} Failed to read file: {}",
-            "Error".bold().red(),
-            note.display()
-        )
-    })?;
+#[derive(Subcommand)]
+enum Command {
+    /// Sync the work vault into the main vault
+    Sync {
+        /// Show what would change without writing anything
+        #[arg(long)]
+        dry_run: bool,
 
-    // Use Vec<&str> to avoid allocating new strings for every line
-    let lines: Vec<&str> = content.lines().collect();
+        /// Don't copy notes that only changed in the main vault back to work
+        #[arg(long)]
+        no_back_update: bool,
+    },
 
-    // Find all hlines in the file
-    let hlines: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|&(_, x)| *x == "---")
-        .map(|(i, _)| i)
-        .collect();
+    /// Add an H1 title from the filename to notes without one
+    Title {
+        #[arg(long, value_enum, default_value_t = VaultName::Work)]
+        vault: VaultName,
 
-    // Match hline pattern for properties header or not
-    let insert_at = if hlines.len() > 1 && hlines[0] < 3 {
-        hlines[1] + 1
+        /// Show which notes would be titled without changing them
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Download data from the Steam Web API
+    #[cfg(feature = "steam")]
+    #[command(subcommand)]
+    Steam(SteamCommand),
+
+    /// Move notes in the vault root with a tag into their own directory
+    Organise {
+        /// Tag to look for, with or without the `#`
+        tag: Tag,
+
+        /// Directory to move notes into [default: the tag]
+        #[arg(long)]
+        dir: Option<String>,
+
+        #[arg(long, value_enum, default_value_t = VaultName::Main)]
+        vault: VaultName,
+
+        /// Show which notes would move without moving them
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[cfg(feature = "steam")]
+#[derive(Subcommand)]
+enum SteamCommand {
+    /// Save the player summary and owned games to the configured data path
+    Fetch,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum VaultName {
+    Main,
+    Work,
+}
+
+impl VaultName {
+    fn open(self, config: &Config) -> Result<Vault> {
+        let path = match self {
+            Self::Main => &config.vaults.main,
+            Self::Work => &config.vaults.work,
+        };
+        Ok(Vault::open(path)?)
+    }
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    if let Err(e) = init_logging(&cli) {
+        eprintln!("warning: file logging disabled: {e:#}");
+    }
+
+    match run(cli) {
+        Ok(code) => code,
+        Err(e) => {
+            tracing::error!("{e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<ExitCode> {
+    let config_path = cli.config.unwrap_or_else(Config::default_path);
+    let config = Config::load(&config_path)?;
+
+    match cli.command {
+        Command::Sync {
+            dry_run,
+            no_back_update,
+        } => sync(&config, dry_run, !no_back_update),
+        Command::Title { vault, dry_run } => title(&config, vault, dry_run),
+        Command::Organise {
+            tag,
+            dir,
+            vault,
+            dry_run,
+        } => organise(&config, &tag, dir.as_deref(), vault, dry_run),
+        #[cfg(feature = "steam")]
+        Command::Steam(SteamCommand::Fetch) => steam_fetch(&config),
+    }
+}
+
+fn title(config: &Config, vault: VaultName, dry_run: bool) -> Result<ExitCode> {
+    let vault = vault.open(config)?;
+    let plan = plan_titles(&vault, &config.sync.skip_dirs)?;
+
+    let report = if dry_run {
+        for edit in &plan.done {
+            tracing::info!("would add title: {}", edit.path);
+        }
+        plan
     } else {
-        0
+        apply_titles(&vault, plan)
     };
 
-    // Detect if the file already has an H1 title at that location
-    if lines.len() > insert_at && lines[insert_at].starts_with("# ") {
-        let stem = note.file_stem().unwrap_or_default().to_string_lossy();
-        println!("{} {} already has title.", "NOTE:".yellow(), stem);
-        // Exit early ->
-        return Ok(());
+    for e in &report.errors {
+        tracing::error!("{}", chain(e));
     }
+    println!("{}{report}", if dry_run { "Dry run: " } else { "" });
+    Ok(exit_code(!report.has_errors()))
+}
 
-    // Remove filename annotations
-    let stem = note.file_stem().unwrap_or_default().to_string_lossy();
+fn organise(
+    config: &Config,
+    tag: &Tag,
+    dir: Option<&str>,
+    vault: VaultName,
+    dry_run: bool,
+) -> Result<ExitCode> {
+    let vault = vault.open(config)?;
+    let plan = plan_moves(&vault, tag, dir)?;
 
-    // Efficiently split using split_once instead of allocating a Vec
-    let title_base = match stem.split_once(" - ") {
-        Some((_, rest)) => rest,
-        None => &stem,
+    let plan = if dry_run {
+        for m in &plan.moves {
+            tracing::info!("would move: {} -> {}", m.from, m.to);
+        }
+        plan
+    } else {
+        apply_moves(&vault, plan)
     };
 
-    // Capitalize the first letter safely
-    let mut chars = title_base.chars();
-    let title = match chars.next() {
-        None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
-    };
-
-    let new_title_line = format!("# {}", title);
-
-    // Build the new file contents efficiently
-    let mut new_content = String::with_capacity(content.len() + new_title_line.len() + 2);
-
-    for (i, line) in lines.iter().enumerate() {
-        if i == insert_at {
-            new_content.push_str(&new_title_line);
-            new_content.push('\n');
-        }
-        new_content.push_str(line);
-        new_content.push('\n');
+    for path in &plan.clashes {
+        tracing::warn!("not moved, target already exists: {path}");
     }
-
-    // Handle edge case where we insert at the end of an empty file
-    if lines.is_empty() && insert_at == 0 {
-        new_content.push_str(&new_title_line);
-        new_content.push('\n');
+    for e in &plan.errors {
+        tracing::error!("{}", chain(e));
     }
-
-    // Add context to the write operation as well
-    fs::write(note, new_content)
-        .with_context(|| format!("Failed to write to file: {}", note.display()))?;
-
-    Ok(())
+    println!("{}{plan}", if dry_run { "Dry run: " } else { "" });
+    Ok(exit_code(plan.errors.is_empty()))
 }
 
-fn get_tags(note: &Path) -> Option<Vec<String>> {
-    let content = fs::read_to_string(note).ok()?;
-    let mut tags = HashSet::new();
-
-    let lines: Vec<&str> = content.lines().collect();
-    let mut yaml_str = String::new();
-    let mut body_start = 0;
-
-    // 1. Isolate the YAML Frontmatter
-    if lines.first() == Some(&"---") {
-        if let Some(end_idx) = lines.iter().skip(1).position(|&x| x == "---") {
-            let end_idx = end_idx + 1; // Adjust index because of the .skip(1)
-            body_start = end_idx + 1; // Body starts after the closing "---"
-
-            // Reconstruct the YAML block to pass to serde_yaml
-            yaml_str = lines[1..end_idx].join("\n");
-        }
-    }
-
-    // 2. Parse YAML with serde_yaml
-    if !yaml_str.is_empty() {
-        // Parse into a generic YAML Mapping
-        if let Ok(Value::Mapping(map)) = serde_yaml::from_str::<Value>(&yaml_str) {
-            // Obsidian accepts both "tag" and "tags"
-            let tag_keys = [
-                Value::String("tags".to_string()),
-                Value::String("tag".to_string()),
-            ];
-
-            for key in tag_keys {
-                if let Some(val) = map.get(&key) {
-                    match val {
-                        // Handles `tags: game` or `tags: game, rpg`
-                        Value::String(s) => {
-                            for t in s.split(',') {
-                                let clean_tag = t.trim().trim_start_matches('#');
-                                if !clean_tag.is_empty() {
-                                    tags.insert(clean_tag.to_string());
-                                }
-                            }
-                        }
-                        // Handles `tags: [game, rpg]` or bulleted lists
-                        Value::Sequence(seq) => {
-                            for item in seq {
-                                if let Value::String(s) = item {
-                                    let clean_tag = s.trim().trim_start_matches('#');
-                                    if !clean_tag.is_empty() {
-                                        tags.insert(clean_tag.to_string());
-                                    }
-                                }
-                            }
-                        }
-                        _ => {} // Ignore other YAML types (e.g., numbers, nested maps)
-                    }
-                }
-            }
-        }
-    }
-
-    // 3. Parse Inline Tags from the Body
-    let body = lines[body_start..min(lines.len(), body_start + 5)].join("\n");
-    if let Ok(re) = Regex::new(r"(?:^|\s)#([a-zA-Z0-9_\-\/]+)") {
-        for cap in re.captures_iter(&body) {
-            if let Some(tag) = cap.get(1) {
-                tags.insert(tag.as_str().to_string());
-            }
-        }
-    }
-
-    // 4. Convert to a sorted Vec
-    let mut tag_vec: Vec<String> = tags.into_iter().collect();
-    tag_vec.sort();
-
-    Some(tag_vec)
-}
-
-fn note_has_tag(note: &Path, tag: &str) -> Option<PathBuf> {
-    match get_tags(note) {
-        Some(v) => {
-            if v.contains(&tag.to_string()) {
-                Some(note.to_owned())
-            } else {
-                None
-            }
-        }
-        None => None,
-    }
-}
-
-fn organise_by_tag(vault: &Path, tag: &str, dir_name: Option<&str>) -> Result<()> {
-    // Set directory name from input or just the tag name
-    let tag_dir = vault.join(dir_name.unwrap_or(tag));
+#[cfg(feature = "steam")]
+fn steam_fetch(config: &Config) -> Result<ExitCode> {
+    let steam = config
+        .steam
+        .as_ref()
+        .context("no [steam] section in the config")?;
+    let fetched = cog::steam::fetch_player_data(steam)?;
     println!(
-        "Organising notes tagged {:?} into directory {:?}",
-        &tag, &tag_dir
+        "Saved {} and {} ({} games)",
+        fetched.summary.display(),
+        fetched.owned_games.display(),
+        fetched.game_count
     );
-    // Create the directory if it doesn't exits
-    if !tag_dir.exists() {
-        fs::create_dir(&tag_dir)
-            .with_context(|| format!("Unable to make directory at: {}", tag_dir.display()))?;
-    }
-
-    // Get tagged notes in the *root* vault only
-    let notes: Vec<_> = fs::read_dir(vault)?
-        // from all the files, only get those that are valid files (and unwrap)
-        .filter_map(Result::ok)
-        // only get those that have the extension .md
-        .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("md"))
-        // only get those that have the tag
-        .filter_map(|note| note_has_tag(&note.path(), tag))
-        .collect();
-
-    // Move all the tagged notes into the correct folder
-    for note in notes {
-        let new_path = &tag_dir.join(&note.file_name().unwrap());
-        println!("  Moving {:?} -> {:?}", &note, &new_path);
-        fs::rename(&note, new_path)?;
-    }
-
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
-fn process_vault(vault: &Path) -> Result<()> {
-    println!("Processing vault: {}", vault.display());
-    // Find all the notes in the vault
-
-    let note_files = WalkDir::new(vault)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("md"));
-
-    for _entry in note_files {
-        // add_inline_title(entry.path())?;
+fn exit_code(success: bool) -> ExitCode {
+    if success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
-
-    organise_by_tag(vault, "game", Some("games"))?;
-
-    println!("Finished processing.");
-    Ok(())
 }
 
-// anyhow::Result<()> - catches errors without horrible types!
-fn main() -> Result<()> {
-    // Resolve the home directory
-    let home_dir = home::home_dir().context("Could not find the home directory")?;
+fn sync(config: &Config, dry_run: bool, back_update: bool) -> Result<ExitCode> {
+    let src = Vault::open(&config.vaults.work)?;
+    let dest = Vault::open(&config.vaults.main)?;
+    let state_path = state::default_path();
+    let last_sync = state::read_last_sync(&state_path)?;
 
-    // Construct the path to the TOML config
-    let config_path = home_dir.join(".config/rhg.toml");
+    tracing::info!(
+        "Syncing {} -> {}",
+        src.root().display(),
+        dest.root().display()
+    );
+    let plan = plan_sync(&src, &dest, last_sync, &config.sync, back_update)?;
 
-    // Read and parse the TOML file using anyhow's Context trait
-    let config_contents = fs::read_to_string(&config_path)
-        .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
+    for note in &plan.notes {
+        match &note.action {
+            Action::Skip(_) => tracing::debug!("{}: {}", note.action, note.path),
+            Action::Conflict => tracing::warn!("conflict: {}", note.path),
+            action if dry_run => tracing::info!("would {action}: {}", note.path),
+            _ => {}
+        }
+    }
 
-    let conf: Config = toml::from_str(&config_contents)
-        .context("Failed to parse TOML configuration. Please check your syntax.")?;
+    let plan = if dry_run {
+        plan
+    } else {
+        let plan = apply(plan, &src, &dest);
+        state::write_last_sync(&state_path, plan.started)
+            .context("synced, but failed to record the sync time")?;
+        plan
+    };
 
-    // Resolve the vault path and run the title adder
-    let vault = PathBuf::from(conf.vault);
+    for e in &plan.errors {
+        tracing::error!("{}", chain(e));
+    }
 
-    process_vault(&vault)?;
+    let summary = plan.summary();
+    println!("{}{summary}", if dry_run { "Dry run: " } else { "" });
+    if summary.conflicts > 0 {
+        println!("Conflicts were changed in both vaults and need merging by hand.");
+    }
 
-    Ok(())
+    Ok(exit_code(summary.errors == 0))
+}
+
+/// Formats an error with each of its causes.
+fn chain(e: &(dyn StdError + 'static)) -> String {
+    iter::successors(Some(e), |&e| e.source())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
+/// Logs to stdout at the requested level, and everything to a log file.
+fn init_logging(cli: &Cli) -> Result<()> {
+    let level = match (cli.quiet, cli.verbose) {
+        (true, _) => LevelFilter::WARN,
+        (false, 0) => LevelFilter::INFO,
+        (false, 1) => LevelFilter::DEBUG,
+        (false, _) => LevelFilter::TRACE,
+    };
+    let stdout = tracing_subscriber::fmt::layer()
+        .without_time()
+        .with_target(false)
+        .with_filter(level);
+
+    let log_path = dirs::state_dir()
+        .or_else(dirs::data_local_dir)
+        .context("no state directory")?
+        .join("cog/cog.log");
+    let file = log_path
+        .parent()
+        .map(fs::create_dir_all)
+        .transpose()
+        .and_then(|_| File::create(&log_path))
+        .with_context(|| format!("failed to open {}", log_path.display()));
+
+    match file {
+        Ok(file) => {
+            let file_layer = tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(Mutex::new(file))
+                .with_filter(LevelFilter::DEBUG);
+            tracing_subscriber::registry()
+                .with(stdout)
+                .with(file_layer)
+                .init();
+            Ok(())
+        }
+        Err(e) => {
+            tracing_subscriber::registry().with(stdout).init();
+            Err(e)
+        }
+    }
 }

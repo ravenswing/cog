@@ -3,18 +3,94 @@ name = "cog"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+steam = ["dep:reqwest", "dep:csv", "dep:serde_json"]
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.4", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.9"
+csv = { version = "1.4", optional = true }
+dirs = "7.0"
+filetime = "0.2"
 rayon = "1.8"
-home = "0.5.12"
-walkdir = "2.5.0"
-toml = "1.0.3"
-colored = "3.1.1"
-glob = "0.3.3"
 regex = "1.12.3"
+reqwest = { version = "0.13", default-features = false, features = [
+    "blocking",
+    "json",
+    "query",
+    "rustls",
+], optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", optional = true }
+serde_norway = "0.9.42"
+tempfile = "3"
+thiserror = "2.0"
+toml = "1.0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+walkdir = "2.5.0"
 
 [dev-dependencies]
-tempfile = "3" # Essential for safely testing file I/O
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# Don't Panic - prevent panics from unwraps and unsafe slicing or indexing
+string_slice = "warn"
+indexing_slicing = "warn"
+unwrap_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+unreachable = "warn"
+get_unwrap = "warn"
+unwrap_in_result = "warn"
+unchecked_time_subtraction = "warn"
+panic_in_result_fn = "warn"
+# Optional - see post for caveats
+# expect_used = "warn"
+# arithmetic_side_effects = "warn"
+
+# Don't Fail Silently - prevent dropped futures and swallowed errors
+let_underscore_future = "warn"
+let_underscore_must_use = "warn"
+unused_result_ok = "warn"
+map_err_ignore = "warn"
+assertions_on_result_states = "warn"
+
+# Don't Do Bad Async Stuff - prevent deadlocks and concurrency bugs
+await_holding_lock = "warn"
+await_holding_refcell_ref = "warn"
+large_futures = "warn"
+
+# Don't Do Unsafe Things with Memory
+mem_forget = "warn"
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+unnecessary_safety_doc = "warn"
+unnecessary_safety_comment = "warn"
+
+# Don't Do Potentially Incorrect Things with Numbers
+float_cmp = "warn"
+float_cmp_const = "warn"
+lossy_float_literal = "warn"
+cast_sign_loss = "warn"
+invalid_upcast_comparisons = "warn"
+# Optional - these effectively force you to document numeric invariants
+# cast_possible_wrap = "warn"
+# cast_precision_loss = "warn"
+# cast_possible_truncation = "warn"
+
+# Don't Do Bad Things That are Easy to Avoid
+rc_mutex = "warn"
+debug_assert_with_mut_call = "warn"
+iter_not_returning_iterator = "warn"
+expl_impl_clone_on_copy = "warn"
+infallible_try_from = "warn"
+dbg_macro = "warn"
+
+# Don't `allow` Your Way Around These Lints - every suppression must be
+# a deliberate #[expect(..., reason = "…")] rather than a silent #[allow]
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
