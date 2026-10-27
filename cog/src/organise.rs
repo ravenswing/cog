@@ -1,21 +1,20 @@
 //! Moving tagged notes into their own directory.
 
 use std::fs;
-use std::path::PathBuf;
 
 use crate::error::{Error, IoContext, Result};
 use crate::note::Note;
 use crate::tags::Tag;
-use crate::vault::Vault;
+use crate::vault::{NotePath, Vault};
 
 /// The outcome of organising a vault.
 #[derive(Debug, Default)]
 pub struct OrganiseReport {
-    /// File names of the notes moved into the directory.
-    pub moved: Vec<PathBuf>,
-    /// File names left in place because the directory already has a note
-    /// with the same name.
-    pub clashes: Vec<PathBuf>,
+    /// Notes moved into the directory, by their path before moving.
+    pub moved: Vec<NotePath>,
+    /// Notes left in place because the directory already has a note with
+    /// the same name.
+    pub clashes: Vec<NotePath>,
     pub errors: Vec<Error>,
 }
 
@@ -53,8 +52,9 @@ pub fn organise_by_tag(
             }
         }
 
-        let name = PathBuf::from(path.file_name().unwrap_or_default());
-        let target = tag_dir.join(&name);
+        let name = path.file_name().unwrap_or_default();
+        let target = tag_dir.join(name);
+        let name = NotePath::new(name);
         if target.exists() {
             report.clashes.push(name);
             continue;
@@ -95,8 +95,8 @@ mod tests {
         let vault = Vault::open(root).unwrap();
         let report = organise_by_tag(&vault, &game(), Some("games"), false).unwrap();
 
-        assert_eq!(report.moved, [PathBuf::from("a.md"), PathBuf::from("b.md")]);
-        assert_eq!(report.clashes, [PathBuf::from("c.md")]);
+        assert_eq!(report.moved, ["a.md", "b.md"].map(NotePath::new));
+        assert_eq!(report.clashes, [NotePath::new("c.md")]);
         assert!(root.join("games/a.md").exists());
         assert_eq!(
             fs::read_to_string(root.join("games/c.md")).unwrap(),
@@ -115,7 +115,7 @@ mod tests {
         let vault = Vault::open(dir.path()).unwrap();
         let report = organise_by_tag(&vault, &game(), None, true).unwrap();
 
-        assert_eq!(report.moved, [PathBuf::from("a.md")]);
+        assert_eq!(report.moved, [NotePath::new("a.md")]);
         assert!(dir.path().join("a.md").exists());
         assert!(!dir.path().join("game").exists());
     }

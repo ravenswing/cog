@@ -151,7 +151,7 @@ fn title(config: &Config, vault: VaultName, dry_run: bool) -> Result<ExitCode> {
         "added title"
     };
     for path in &report.added {
-        tracing::info!("{verb}: {}", path.display());
+        tracing::info!("{verb}: {path}");
     }
     for e in &report.errors {
         tracing::error!("{}", chain(e));
@@ -177,10 +177,10 @@ fn organise(
 
     let verb = if dry_run { "would move" } else { "moved" };
     for name in &report.moved {
-        tracing::info!("{verb}: {}", name.display());
+        tracing::info!("{verb}: {name}");
     }
     for name in &report.clashes {
-        tracing::warn!("not moved, target already exists: {}", name.display());
+        tracing::warn!("not moved, target already exists: {name}");
     }
     for e in &report.errors {
         tracing::error!("{}", chain(e));
@@ -234,9 +234,9 @@ fn sync(config: &Config, dry_run: bool, back_update: bool) -> Result<ExitCode> {
 
     for note in &plan.notes {
         match &note.action {
-            Action::Skip(_) => tracing::debug!("{}: {}", note.action, note.path.display()),
-            Action::Conflict => tracing::warn!("conflict: {}", note.path.display()),
-            action if dry_run => tracing::info!("would {action}: {}", note.path.display()),
+            Action::Skip(_) => tracing::debug!("{}: {}", note.action, note.path),
+            Action::Conflict => tracing::warn!("conflict: {}", note.path),
+            action if dry_run => tracing::info!("would {action}: {}", note.path),
             _ => {}
         }
     }

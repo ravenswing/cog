@@ -2,18 +2,18 @@
 
 use rayon::prelude::*;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::{Error, IoContext, Result};
 use crate::fsutil::write_atomic;
 use crate::note::{Split, split_frontmatter};
-use crate::vault::Vault;
+use crate::vault::{NotePath, Vault};
 
 /// The outcome of titling a whole vault.
 #[derive(Debug, Default)]
 pub struct TitleReport {
-    /// Notes that were given a title, relative to the vault root.
-    pub added: Vec<PathBuf>,
+    /// Notes that were given a title.
+    pub added: Vec<NotePath>,
     pub errors: Vec<Error>,
 }
 
@@ -21,15 +21,14 @@ pub struct TitleReport {
 ///
 /// Excalidraw drawings, stored as `.excalidraw.md`, are left alone.
 pub fn add_titles(vault: &Vault, skip_dirs: &[String], dry_run: bool) -> Result<TitleReport> {
-    let paths: Vec<PathBuf> = vault
-        .note_paths(skip_dirs)?
-        .into_iter()
-        .filter(|path| !path.to_string_lossy().ends_with(".excalidraw.md"))
-        .collect();
+    let paths: Vec<NotePath> = vault
+        .notes(skip_dirs)
+        .filter(|path| !path.as_ref().is_ok_and(is_drawing))
+        .collect::<Result<_>>()?;
     let results: Vec<_> = paths
         .into_par_iter()
         .map(|path| {
-            let full = vault.root().join(&path);
+            let full = vault.resolve(&path);
             let content = fs::read_to_string(&full).ctx("read", &full)?;
             let Some(titled) = with_title(&full, &content)? else {
                 return Ok(None);
@@ -50,6 +49,11 @@ pub fn add_titles(vault: &Vault, skip_dirs: &[String], dry_run: bool) -> Result<
         }
     }
     Ok(report)
+}
+
+/// Excalidraw drawings are stored as Markdown, but aren't notes to title.
+fn is_drawing(path: &NotePath) -> bool {
+    path.as_path().to_string_lossy().ends_with(".excalidraw.md")
 }
 
 /// Returns `content` with a title inserted after the frontmatter, or `None`
@@ -136,7 +140,7 @@ mod tests {
         let vault = Vault::open(dir.path()).unwrap();
         let report = add_titles(&vault, &[], false).unwrap();
 
-        assert_eq!(report.added, [PathBuf::from("a.md")]);
+        assert_eq!(report.added, [NotePath::new("a.md")]);
         assert_eq!(
             fs::read_to_string(dir.path().join("b.excalidraw.md")).unwrap(),
             ""

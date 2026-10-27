@@ -9,9 +9,10 @@
 //! copied is seen as unchanged on the next run.
 
 use rayon::prelude::*;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::SystemTime;
 
 use crate::config::SyncConfig;
@@ -19,7 +20,7 @@ use crate::error::{Error, IoContext, Result};
 use crate::fsutil::copy_preserving_mtime;
 use crate::note::Note;
 use crate::tags::Tag;
-use crate::vault::Vault;
+use crate::vault::{NotePath, Vault};
 
 /// How a note in both vaults has changed since the last sync.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,10 +90,10 @@ impl fmt::Display for SkipReason {
     }
 }
 
-/// A note's path, relative to both vault roots, and what to do with it.
+/// A note's path, the same in both vaults, and what to do with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Planned {
-    pub path: PathBuf,
+    pub path: NotePath,
     pub action: Action,
 }
 
@@ -109,11 +110,11 @@ pub struct SyncPlan {
 
 impl SyncPlan {
     /// Notes with the given action.
-    pub fn with<'a>(&'a self, action: &'a Action) -> impl Iterator<Item = &'a Path> {
+    pub fn with<'a>(&'a self, action: &'a Action) -> impl Iterator<Item = &'a NotePath> {
         self.notes
             .iter()
             .filter(move |n| &n.action == action)
-            .map(|n| n.path.as_path())
+            .map(|n| &n.path)
     }
 
     pub fn count(&self, action: &Action) -> usize {
@@ -141,8 +142,8 @@ pub fn plan_sync(
     back_update: bool,
 ) -> Result<SyncPlan> {
     let started = SystemTime::now();
-    let src_paths = src.note_paths(&config.skip_dirs)?;
-    let dest_paths = dest.note_paths(&config.skip_dirs)?;
+    let src_paths: Vec<NotePath> = src.notes(&config.skip_dirs).collect::<Result<_>>()?;
+    let dest_paths: BTreeSet<NotePath> = dest.notes(&config.skip_dirs).collect::<Result<_>>()?;
 
     let planner = Planner {
         src,
@@ -153,8 +154,6 @@ pub fn plan_sync(
     };
 
     let results: Vec<_> = src_paths
-        .into_iter()
-        .collect::<Vec<_>>()
         .into_par_iter()
         .map(|path| {
             let action = planner.plan(&path, dest_paths.contains(&path))?;
@@ -188,7 +187,7 @@ struct Planner<'a> {
 }
 
 impl Planner<'_> {
-    fn plan(&self, path: &Path, in_dest: bool) -> Result<Action> {
+    fn plan(&self, path: &NotePath, in_dest: bool) -> Result<Action> {
         if self.in_excluded_dir(path) {
             return Ok(Action::Skip(SkipReason::ExcludedDir));
         }
@@ -196,8 +195,8 @@ impl Planner<'_> {
         // Check mtimes first, so unchanged notes are never read
         let action = if in_dest {
             let change = change(
-                mtime(&self.src.root().join(path))?,
-                mtime(&self.dest.root().join(path))?,
+                mtime(&self.src.resolve(path))?,
+                mtime(&self.dest.resolve(path))?,
                 self.last_sync,
             );
             match change {
@@ -217,8 +216,8 @@ impl Planner<'_> {
         }
     }
 
-    fn in_excluded_dir(&self, path: &Path) -> bool {
-        path.parent().is_some_and(|parent| {
+    fn in_excluded_dir(&self, path: &NotePath) -> bool {
+        path.as_path().parent().is_some_and(|parent| {
             parent.components().any(|c| {
                 self.config
                     .exclude_dirs
@@ -228,8 +227,8 @@ impl Planner<'_> {
         })
     }
 
-    fn excluded_tag(&self, path: &Path) -> Result<Option<Tag>> {
-        let note = Note::load(&self.src.root().join(path))?;
+    fn excluded_tag(&self, path: &NotePath) -> Result<Option<Tag>> {
+        let note = Note::load(&self.src.resolve(path))?;
         Ok(note
             .tags
             .intersection(&self.config.exclude_tags)
@@ -256,8 +255,8 @@ pub fn apply(plan: &SyncPlan, src: &Vault, dest: &Vault) -> Vec<Error> {
                 Action::BackUpdate => (dest, src),
                 Action::Conflict | Action::Skip(_) => return None,
             };
-            tracing::info!("{}: {}", note.action, note.path.display());
-            copy_preserving_mtime(&from.root().join(&note.path), &to.root().join(&note.path)).err()
+            tracing::info!("{}: {}", note.action, note.path);
+            copy_preserving_mtime(&from.resolve(&note.path), &to.resolve(&note.path)).err()
         })
         .collect()
 }

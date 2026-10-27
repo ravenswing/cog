@@ -65,7 +65,7 @@ impl Fixture {
     fn action(plan: &SyncPlan, path: &str) -> Action {
         plan.notes
             .iter()
-            .find(|n| n.path == Path::new(path))
+            .find(|n| n.path.as_path() == Path::new(path))
             .map(|n| n.action.clone())
             .unwrap_or_else(|| panic!("{path} not in plan"))
     }
