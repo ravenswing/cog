@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::cmp::Reverse;
 use std::error::Error as StdError;
 use std::fs::{self, File};
+use std::io::{self, IsTerminal};
 use std::iter;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -339,7 +340,9 @@ fn chain(e: &(dyn StdError + 'static)) -> String {
         .join(": ")
 }
 
-/// Logs to stdout at the requested level, and everything to a log file.
+/// Logs to stderr at the requested level, and everything to a log file.
+///
+/// Logging to stderr keeps stdout for results, so they can be piped.
 fn init_logging(cli: &Cli) -> Result<()> {
     let level = match (cli.quiet, cli.verbose) {
         (true, _) => LevelFilter::WARN,
@@ -347,7 +350,9 @@ fn init_logging(cli: &Cli) -> Result<()> {
         (false, 1) => LevelFilter::DEBUG,
         (false, _) => LevelFilter::TRACE,
     };
-    let stdout = tracing_subscriber::fmt::layer()
+    let stderr = tracing_subscriber::fmt::layer()
+        .with_writer(io::stderr)
+        .with_ansi(io::stderr().is_terminal())
         .without_time()
         .with_target(false)
         .with_filter(level);
@@ -370,13 +375,13 @@ fn init_logging(cli: &Cli) -> Result<()> {
                 .with_writer(Mutex::new(file))
                 .with_filter(LevelFilter::DEBUG);
             tracing_subscriber::registry()
-                .with(stdout)
+                .with(stderr)
                 .with(file_layer)
                 .init();
             Ok(())
         }
         Err(e) => {
-            tracing_subscriber::registry().with(stdout).init();
+            tracing_subscriber::registry().with(stderr).init();
             Err(e)
         }
     }
