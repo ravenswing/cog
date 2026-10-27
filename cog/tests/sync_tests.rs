@@ -57,7 +57,9 @@ impl Fixture {
     /// Plans and applies a sync, then records it as the last sync.
     fn sync(&mut self) -> SyncPlan {
         let plan = self.plan(true);
-        assert!(apply(&plan, &self.src, &self.dest).is_empty());
+        let planning_errors = plan.errors.len();
+        let plan = apply(plan, &self.src, &self.dest);
+        assert_eq!(plan.errors.len(), planning_errors, "a copy failed");
         self.last_sync = plan.started;
         plan
     }

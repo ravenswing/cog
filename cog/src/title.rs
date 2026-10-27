@@ -1,6 +1,7 @@
 //! Adding an H1 title to notes that lack one.
 
 use rayon::prelude::*;
+use std::fmt;
 use std::fs;
 use std::path::Path;
 
@@ -10,12 +11,30 @@ use crate::note::{Split, split_frontmatter};
 use crate::report::Report;
 use crate::vault::{NotePath, Vault};
 
-/// Titles every untitled note in `vault`, or only reports them if `dry_run`.
+/// A title to add to one note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleEdit {
+    pub path: NotePath,
+    /// The note's full contents, with the title added.
+    contents: String,
+}
+
+impl fmt::Display for Report<TitleEdit> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} titles added, {} errors",
+            self.done.len(),
+            self.errors.len()
+        )
+    }
+}
+
+/// Works out which notes in `vault` need a title, without changing any.
 ///
-/// Returns the notes that were, or would be, given a title.
-///
-/// Excalidraw drawings, stored as `.excalidraw.md`, are left alone.
-pub fn add_titles(vault: &Vault, skip_dirs: &[String], dry_run: bool) -> Result<Report<NotePath>> {
+/// Excalidraw drawings, stored as `.excalidraw.md`, are left alone. Fails
+/// only if the vault can't be walked.
+pub fn plan_titles(vault: &Vault, skip_dirs: &[String]) -> Result<Report<TitleEdit>> {
     let paths: Vec<NotePath> = vault
         .notes(skip_dirs)
         .filter(|path| !path.as_ref().is_ok_and(is_drawing))
@@ -25,16 +44,30 @@ pub fn add_titles(vault: &Vault, skip_dirs: &[String], dry_run: bool) -> Result<
         .map(|path| {
             let full = vault.resolve(&path);
             let content = fs::read_to_string(&full).ctx("read", &full)?;
-            let Some(titled) = with_title(&full, &content)? else {
-                return Ok(None);
-            };
-            if !dry_run {
-                write_atomic(&full, titled.as_bytes())?;
-            }
-            Ok(Some(path))
+            Ok(with_title(&full, &content)?.map(|contents| TitleEdit { path, contents }))
         })
         .filter_map(Result::transpose)
         .collect())
+}
+
+/// Writes the titles in `plan`.
+///
+/// Edits that fail to write move from `done` to `errors`.
+pub fn apply_titles(vault: &Vault, plan: Report<TitleEdit>) -> Report<TitleEdit> {
+    let Report { done, mut errors } = plan;
+    let applied: Report<TitleEdit> = done
+        .into_par_iter()
+        .map(|edit| {
+            write_atomic(&vault.resolve(&edit.path), edit.contents.as_bytes())?;
+            tracing::info!("added title: {}", edit.path);
+            Ok(edit)
+        })
+        .collect();
+    errors.extend(applied.errors);
+    Report {
+        done: applied.done,
+        errors,
+    }
 }
 
 /// Excalidraw drawings are stored as Markdown, but aren't notes to title.
@@ -124,12 +157,32 @@ mod tests {
         fs::write(dir.path().join("b.excalidraw.md"), "").unwrap();
 
         let vault = Vault::open(dir.path()).unwrap();
-        let report = add_titles(&vault, &[], false).unwrap();
+        let plan = plan_titles(&vault, &[]).unwrap();
 
-        assert_eq!(report.done, [NotePath::new("a.md")]);
+        let paths: Vec<_> = plan.done.iter().map(|edit| &edit.path).collect();
+        assert_eq!(paths, [&NotePath::new("a.md")]);
         assert_eq!(
             fs::read_to_string(dir.path().join("b.excalidraw.md")).unwrap(),
             ""
+        );
+    }
+
+    #[test]
+    fn planning_writes_nothing_and_applying_writes_titles() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "body").unwrap();
+        fs::write(dir.path().join("b.md"), "# Titled").unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+
+        let plan = plan_titles(&vault, &[]).unwrap();
+        assert_eq!(plan.done.len(), 1);
+        assert_eq!(fs::read_to_string(dir.path().join("a.md")).unwrap(), "body");
+
+        let applied = apply_titles(&vault, plan);
+        assert_eq!(applied.to_string(), "1 titles added, 0 errors");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.md")).unwrap(),
+            "# A\nbody"
         );
     }
 

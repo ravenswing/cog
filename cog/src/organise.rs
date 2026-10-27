@@ -1,74 +1,141 @@
 //! Moving tagged notes into their own directory.
 
+use std::ffi::OsStr;
+use std::fmt;
 use std::fs;
+use std::path::Path;
 
 use crate::error::{Error, IoContext, Result};
 use crate::note::Note;
+use crate::report::Report;
 use crate::tags::Tag;
 use crate::vault::{NotePath, Vault};
 
-/// The outcome of organising a vault.
+/// Moving one note into the tag's directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Move {
+    pub from: NotePath,
+    pub to: NotePath,
+}
+
+/// What organising a vault will do, or did.
 #[derive(Debug, Default)]
-pub struct OrganiseReport {
-    /// Notes moved into the directory, by their path before moving.
-    pub moved: Vec<NotePath>,
+pub struct OrganisePlan {
+    pub moves: Vec<Move>,
     /// Notes left in place because the directory already has a note with
     /// the same name.
     pub clashes: Vec<NotePath>,
     pub errors: Vec<Error>,
 }
 
-/// Moves notes in the root of `vault` tagged `tag` into a subdirectory.
-///
-/// The directory is named `dir_name`, or `tag` if not given, and is created
-/// if needed. Only notes directly in the vault root are considered. With
-/// `dry_run`, nothing is created or moved.
-pub fn organise_by_tag(
-    vault: &Vault,
-    tag: &Tag,
-    dir_name: Option<&str>,
-    dry_run: bool,
-) -> Result<OrganiseReport> {
-    let tag_dir = vault.root().join(dir_name.unwrap_or(tag.as_str()));
-    let mut report = OrganiseReport::default();
+impl fmt::Display for OrganisePlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} moved, {} clashes, {} errors",
+            self.moves.len(),
+            self.clashes.len(),
+            self.errors.len()
+        )
+    }
+}
 
-    let mut entries: Vec<_> = fs::read_dir(vault.root())
+enum Placement {
+    Move(Move),
+    Clash(NotePath),
+}
+
+/// Works out which notes in the root of `vault` tagged `tag` move into a
+/// subdirectory, without moving any.
+///
+/// The directory is named `dir_name`, or `tag` if not given. Only notes
+/// directly in the vault root are considered.
+pub fn plan_moves(vault: &Vault, tag: &Tag, dir_name: Option<&str>) -> Result<OrganisePlan> {
+    let dir = Path::new(dir_name.unwrap_or(tag.as_str()));
+
+    let mut names: Vec<_> = fs::read_dir(vault.root())
         .ctx("read directory", vault.root())?
         .map(|entry| entry.map(|e| e.path()))
-        .collect::<std::io::Result<_>>()
-        .ctx("read directory", vault.root())?;
-    entries.sort();
+        .collect::<std::io::Result<Vec<_>>>()
+        .ctx("read directory", vault.root())?
+        .into_iter()
+        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "md"))
+        .filter_map(|path| path.file_name().map(OsStr::to_owned))
+        .collect();
+    names.sort();
 
-    for path in entries {
-        if !path.is_file() || path.extension().is_none_or(|ext| ext != "md") {
-            continue;
-        }
-        match Note::load(&path) {
-            Ok(note) if note.tags.contains(tag) => {}
-            Ok(_) => continue,
-            Err(e) => {
-                report.errors.push(e);
-                continue;
-            }
-        }
+    let Report { done, errors } = names
+        .iter()
+        .map(|name| place(vault, tag, dir, name))
+        .filter_map(Result::transpose)
+        .collect();
 
-        let name = path.file_name().unwrap_or_default();
-        let target = tag_dir.join(name);
-        let name = NotePath::new(name);
-        if target.exists() {
-            report.clashes.push(name);
-            continue;
+    let mut plan = OrganisePlan {
+        errors,
+        ..OrganisePlan::default()
+    };
+    for placement in done {
+        match placement {
+            Placement::Move(m) => plan.moves.push(m),
+            Placement::Clash(path) => plan.clashes.push(path),
         }
-        if !dry_run {
-            fs::create_dir_all(&tag_dir).ctx("create directory", &tag_dir)?;
-            if let Err(e) = fs::rename(&path, &target).ctx("move", &path) {
-                report.errors.push(e);
-                continue;
-            }
-        }
-        report.moved.push(name);
     }
-    Ok(report)
+    Ok(plan)
+}
+
+/// Where a root note goes, or `None` if it doesn't have the tag.
+fn place(vault: &Vault, tag: &Tag, dir: &Path, name: &OsStr) -> Result<Option<Placement>> {
+    let from = NotePath::new(name);
+    let note = Note::load(&vault.resolve(&from))?;
+    if !note.tags.contains(tag) {
+        return Ok(None);
+    }
+    let to = NotePath::new(dir.join(name));
+    Ok(Some(if vault.resolve(&to).exists() {
+        Placement::Clash(from)
+    } else {
+        Placement::Move(Move { from, to })
+    }))
+}
+
+/// Carries out the moves in `plan`.
+///
+/// Moves that fail go to `errors`, and any whose target has appeared since
+/// planning go to `clashes` rather than overwriting it.
+pub fn apply_moves(vault: &Vault, plan: OrganisePlan) -> OrganisePlan {
+    let OrganisePlan {
+        moves,
+        mut clashes,
+        mut errors,
+    } = plan;
+    let mut done = Vec::new();
+
+    for m in moves {
+        let (from, to) = (vault.resolve(&m.from), vault.resolve(&m.to));
+        if to.exists() {
+            clashes.push(m.from);
+            continue;
+        }
+        match move_file(&from, &to) {
+            Ok(()) => {
+                tracing::info!("moved: {} -> {}", m.from, m.to);
+                done.push(m);
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+    OrganisePlan {
+        moves: done,
+        clashes,
+        errors,
+    }
+}
+
+fn move_file(from: &Path, to: &Path) -> Result<()> {
+    if let Some(dir) = to.parent() {
+        fs::create_dir_all(dir).ctx("create directory", dir)?;
+    }
+    fs::rename(from, to).ctx("move", from)
 }
 
 #[cfg(test)]
@@ -93,10 +160,13 @@ mod tests {
         fs::write(root.join("sub/e.md"), "#game").unwrap();
 
         let vault = Vault::open(root).unwrap();
-        let report = organise_by_tag(&vault, &game(), Some("games"), false).unwrap();
+        let plan = apply_moves(&vault, plan_moves(&vault, &game(), Some("games")).unwrap());
 
-        assert_eq!(report.moved, ["a.md", "b.md"].map(NotePath::new));
-        assert_eq!(report.clashes, [NotePath::new("c.md")]);
+        let moved: Vec<_> = plan.moves.iter().map(|m| &m.from).collect();
+        assert_eq!(moved, [&NotePath::new("a.md"), &NotePath::new("b.md")]);
+        assert_eq!(plan.moves[0].to, NotePath::new("games/a.md"));
+        assert_eq!(plan.clashes, [NotePath::new("c.md")]);
+        assert_eq!(plan.to_string(), "2 moved, 1 clashes, 0 errors");
         assert!(root.join("games/a.md").exists());
         assert_eq!(
             fs::read_to_string(root.join("games/c.md")).unwrap(),
@@ -108,15 +178,34 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_moves_nothing() {
+    fn planning_moves_nothing() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("a.md"), "#game").unwrap();
 
         let vault = Vault::open(dir.path()).unwrap();
-        let report = organise_by_tag(&vault, &game(), None, true).unwrap();
+        let plan = plan_moves(&vault, &game(), None).unwrap();
 
-        assert_eq!(report.moved, [NotePath::new("a.md")]);
+        assert_eq!(plan.moves[0].to, NotePath::new("game/a.md"));
         assert!(dir.path().join("a.md").exists());
         assert!(!dir.path().join("game").exists());
+    }
+
+    #[test]
+    fn target_appearing_after_planning_is_a_clash() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "#game").unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+
+        let plan = plan_moves(&vault, &game(), None).unwrap();
+        fs::create_dir(dir.path().join("game")).unwrap();
+        fs::write(dir.path().join("game/a.md"), "new").unwrap();
+        let plan = apply_moves(&vault, plan);
+
+        assert!(plan.moves.is_empty());
+        assert_eq!(plan.clashes, [NotePath::new("a.md")]);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("game/a.md")).unwrap(),
+            "new"
+        );
     }
 }

@@ -260,22 +260,35 @@ fn mtime(path: &Path) -> Result<SystemTime> {
         .ctx("read mtime of", path)
 }
 
-/// Carries out the copies in `plan`, returning any that failed.
+/// Carries out the copies in `plan`.
 ///
-/// A failed copy doesn't stop the others.
-pub fn apply(plan: &SyncPlan, src: &Vault, dest: &Vault) -> Vec<Error> {
-    plan.notes
-        .iter()
-        .filter_map(|note| {
+/// A failed copy doesn't stop the others. Notes that fail move from `notes`
+/// to `errors`, so the returned plan describes what was actually done.
+pub fn apply(plan: SyncPlan, src: &Vault, dest: &Vault) -> SyncPlan {
+    let SyncPlan {
+        started,
+        notes,
+        mut errors,
+    } = plan;
+    let applied: Report<Planned> = notes
+        .into_iter()
+        .map(|note| {
             let (from, to) = match note.action {
                 Action::Create | Action::Update => (src, dest),
                 Action::BackUpdate => (dest, src),
-                Action::Conflict | Action::Skip(_) => return None,
+                Action::Conflict | Action::Skip(_) => return Ok(note),
             };
+            copy_preserving_mtime(&from.resolve(&note.path), &to.resolve(&note.path))?;
             tracing::info!("{}: {}", note.action, note.path);
-            copy_preserving_mtime(&from.resolve(&note.path), &to.resolve(&note.path)).err()
+            Ok(note)
         })
-        .collect()
+        .collect();
+    errors.extend(applied.errors);
+    SyncPlan {
+        started,
+        notes: applied.done,
+        errors,
+    }
 }
 
 #[cfg(test)]

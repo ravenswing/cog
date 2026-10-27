@@ -9,11 +9,11 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::prelude::*;
 
 use cog::config::Config;
-use cog::organise::organise_by_tag;
+use cog::organise::{apply_moves, plan_moves};
 use cog::state;
-use cog::sync::{Action, Summary, apply, plan_sync};
+use cog::sync::{Action, apply, plan_sync};
 use cog::tags::Tag;
-use cog::title::add_titles;
+use cog::title::{apply_titles, plan_titles};
 use cog::vault::Vault;
 
 /// Obsidian vault management.
@@ -143,25 +143,21 @@ fn run(cli: Cli) -> Result<ExitCode> {
 
 fn title(config: &Config, vault: VaultName, dry_run: bool) -> Result<ExitCode> {
     let vault = vault.open(config)?;
-    let report = add_titles(&vault, &config.sync.skip_dirs, dry_run)?;
+    let plan = plan_titles(&vault, &config.sync.skip_dirs)?;
 
-    let verb = if dry_run {
-        "would add title"
+    let report = if dry_run {
+        for edit in &plan.done {
+            tracing::info!("would add title: {}", edit.path);
+        }
+        plan
     } else {
-        "added title"
+        apply_titles(&vault, plan)
     };
-    for path in &report.done {
-        tracing::info!("{verb}: {path}");
-    }
+
     for e in &report.errors {
         tracing::error!("{}", chain(e));
     }
-    println!(
-        "{}{} titles added, {} errors",
-        if dry_run { "Dry run: " } else { "" },
-        report.done.len(),
-        report.errors.len()
-    );
+    println!("{}{report}", if dry_run { "Dry run: " } else { "" });
     Ok(exit_code(!report.has_errors()))
 }
 
@@ -173,26 +169,25 @@ fn organise(
     dry_run: bool,
 ) -> Result<ExitCode> {
     let vault = vault.open(config)?;
-    let report = organise_by_tag(&vault, tag, dir, dry_run)?;
+    let plan = plan_moves(&vault, tag, dir)?;
 
-    let verb = if dry_run { "would move" } else { "moved" };
-    for name in &report.moved {
-        tracing::info!("{verb}: {name}");
+    let plan = if dry_run {
+        for m in &plan.moves {
+            tracing::info!("would move: {} -> {}", m.from, m.to);
+        }
+        plan
+    } else {
+        apply_moves(&vault, plan)
+    };
+
+    for path in &plan.clashes {
+        tracing::warn!("not moved, target already exists: {path}");
     }
-    for name in &report.clashes {
-        tracing::warn!("not moved, target already exists: {name}");
-    }
-    for e in &report.errors {
+    for e in &plan.errors {
         tracing::error!("{}", chain(e));
     }
-    println!(
-        "{}{} moved, {} clashes, {} errors",
-        if dry_run { "Dry run: " } else { "" },
-        report.moved.len(),
-        report.clashes.len(),
-        report.errors.len()
-    );
-    Ok(exit_code(report.errors.is_empty()))
+    println!("{}{plan}", if dry_run { "Dry run: " } else { "" });
+    Ok(exit_code(plan.errors.is_empty()))
 }
 
 #[cfg(feature = "steam")]
@@ -241,23 +236,20 @@ fn sync(config: &Config, dry_run: bool, back_update: bool) -> Result<ExitCode> {
         }
     }
 
-    let apply_errors = if dry_run {
-        Vec::new()
+    let plan = if dry_run {
+        plan
     } else {
-        let errors = apply(&plan, &src, &dest);
+        let plan = apply(plan, &src, &dest);
         state::write_last_sync(&state_path, plan.started)
             .context("synced, but failed to record the sync time")?;
-        errors
+        plan
     };
 
-    for e in plan.errors.iter().chain(&apply_errors) {
+    for e in &plan.errors {
         tracing::error!("{}", chain(e));
     }
 
-    let summary = Summary {
-        errors: plan.errors.len() + apply_errors.len(),
-        ..plan.summary()
-    };
+    let summary = plan.summary();
     println!("{}{summary}", if dry_run { "Dry run: " } else { "" });
     if summary.conflicts > 0 {
         println!("Conflicts were changed in both vaults and need merging by hand.");
