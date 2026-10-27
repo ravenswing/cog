@@ -1,5 +1,6 @@
 # cog
-*Cân O Garreg* - *A Song of Stone*
+
+_Cân O Garreg_ - _A Song of Stone_
 
 Obsidian File Management & Analysis
 
@@ -25,22 +26,22 @@ work = "/path/to/work/vault"
 [sync]
 skip_dirs = ["templates", "bases"]                # never walked, in either vault
 exclude_dirs = ["meetings", "projects", "people"] # never synced from work
-exclude_tags = ["nbd", "no-sync", "client"]       # never synced from work
+exclude_tags = ["no-sync", "client"]       # never synced from work
 
 # Only needed for `cog steam`
 [steam]
 api_file = "steam_api.key"  # relative to this file
-id = 76561190000000000
+id = 123400000
 data_path = "/path/to/data"
 ```
 
 ## Commands
 
 - `cog sync` - syncs the work vault into the main vault.
-    - Notes only in work are copied over.
-    - Notes changed in only one vault since the last sync are copied to the other.
-    - Notes changed in both are reported as conflicts and left alone.
-    - `--dry-run` shows what would happen, `--no-back-update` stops changes in main being copied back to work.
+  - Notes only in work are copied over.
+  - Notes changed in only one vault since the last sync are copied to the other.
+  - Notes changed in both are reported as conflicts and left alone.
+  - `--dry-run` shows what would happen, `--no-back-update` stops changes in main being copied back to work.
 - `cog title` - adds an H1 title from the filename to notes without one, dropping any `prefix - ` from the name. Defaults to the work vault.
 - `cog organise <tag>` - moves notes in the root of the main vault with `<tag>` into a directory named after the tag, or `--dir <name>`.
 - `cog steam fetch` - saves the Steam player summary and owned games to `steam.data_path`.
