@@ -232,6 +232,30 @@ fn failed_copies_are_retried_next_run() {
     assert_eq!(read(&f.dest, "a.md"), "new");
 }
 
+#[cfg(unix)]
+#[test]
+fn notes_copied_in_a_failed_run_are_not_conflicts() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut f = Fixture::new();
+    f.write(&f.src, "a.md", "new", 10);
+    f.write(&f.src, "sub/b.md", "new", 10);
+    f.write(&f.dest, "sub/b.md", "old", 120);
+    let sub = f.dest.root().join("sub");
+
+    fs::set_permissions(&sub, fs::Permissions::from_mode(0o555)).unwrap();
+    let plan = f.plan(true);
+    let plan = f.apply(plan);
+    fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(plan.errors.len(), 1);
+
+    let plan = f.sync();
+    assert_eq!(
+        Fixture::action(&plan, "a.md"),
+        Action::Skip(SkipReason::Unchanged)
+    );
+    assert_eq!(Fixture::action(&plan, "sub/b.md"), Action::Update);
+}
+
 #[test]
 fn planning_writes_nothing() {
     let f = Fixture::new();

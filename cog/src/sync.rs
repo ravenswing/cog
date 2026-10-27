@@ -6,7 +6,8 @@
 //!
 //! Whether a note changed is judged by comparing its mtime with the time of
 //! the last sync. Copies keep the source's mtime, so a note that was just
-//! copied is seen as unchanged on the next run.
+//! copied is seen as unchanged on the next run, even if that run's sync time
+//! wasn't recorded.
 
 use rayon::prelude::*;
 use std::fmt;
@@ -35,8 +36,12 @@ pub enum Change {
 /// Compares both copies of a note against the last sync time.
 ///
 /// A note counts as changed only if its mtime is strictly after the last
-/// sync.
+/// sync. Copies with the same mtime are one copied by an earlier sync, so
+/// neither has changed.
 pub fn change(src: SystemTime, dest: SystemTime, last_sync: SystemTime) -> Change {
+    if src == dest {
+        return Change::Neither;
+    }
     match (src > last_sync, dest > last_sync) {
         (false, false) => Change::Neither,
         (true, false) => Change::Source,
@@ -337,7 +342,7 @@ mod tests {
             (at(150), at(50), Change::Source),
             (at(150), at(100), Change::Source),
             (at(50), at(150), Change::Destination),
-            (at(150), at(150), Change::Both),
+            (at(150), at(150), Change::Neither),
             (at(150), at(200), Change::Both),
         ];
         for (src, dest, expected) in cases {
