@@ -9,9 +9,9 @@
 //! copied is seen as unchanged on the next run.
 
 use rayon::prelude::*;
-use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -157,8 +157,8 @@ impl fmt::Display for Summary {
 
 /// Works out what syncing `src` into `dest` would do.
 ///
-/// Fails only if either vault can't be walked. Notes that can't be read are
-/// collected in [`SyncPlan::errors`] and left out of the plan.
+/// Fails only if the source vault can't be walked. Notes that can't be read
+/// are collected in [`SyncPlan::errors`] and left out of the plan.
 pub fn plan_sync(
     src: &Vault,
     dest: &Vault,
@@ -168,7 +168,6 @@ pub fn plan_sync(
 ) -> Result<SyncPlan> {
     let started = SystemTime::now();
     let src_paths: Vec<NotePath> = src.notes(&config.skip_dirs).collect::<Result<_>>()?;
-    let dest_paths: BTreeSet<NotePath> = dest.notes(&config.skip_dirs).collect::<Result<_>>()?;
 
     let planner = Planner {
         src,
@@ -184,7 +183,7 @@ pub fn plan_sync(
     } = src_paths
         .into_par_iter()
         .map(|path| {
-            let action = planner.plan(&path, dest_paths.contains(&path))?;
+            let action = planner.plan(&path)?;
             Ok(Planned { path, action })
         })
         .collect();
@@ -204,27 +203,21 @@ struct Planner<'a> {
 }
 
 impl Planner<'_> {
-    fn plan(&self, path: &NotePath, in_dest: bool) -> Result<Action> {
+    fn plan(&self, path: &NotePath) -> Result<Action> {
         if self.in_excluded_dir(path) {
             return Ok(Action::Skip(SkipReason::ExcludedDir));
         }
 
         // Check mtimes first, so unchanged notes are never read
-        let action = if in_dest {
-            let change = change(
-                mtime(&self.src.resolve(path))?,
-                mtime(&self.dest.resolve(path))?,
-                self.last_sync,
-            );
-            match change {
+        let action = match dest_mtime(&self.dest.resolve(path))? {
+            Some(dest) => match change(mtime(&self.src.resolve(path))?, dest, self.last_sync) {
                 Change::Neither => return Ok(Action::Skip(SkipReason::Unchanged)),
                 Change::Source => Action::Update,
                 Change::Destination if self.back_update => Action::BackUpdate,
                 Change::Destination => Action::Skip(SkipReason::DestinationNewer),
                 Change::Both => Action::Conflict,
-            }
-        } else {
-            Action::Create
+            },
+            None => Action::Create,
         };
 
         match self.excluded_tag(path)? {
@@ -256,6 +249,19 @@ fn mtime(path: &Path) -> Result<SystemTime> {
     fs::metadata(path)
         .and_then(|m| m.modified())
         .ctx("read mtime of", path)
+}
+
+/// The mtime of a note in the destination, or `None` if it isn't there.
+///
+/// Looking each note up directly is cheaper than walking the destination,
+/// which is usually the larger vault.
+fn dest_mtime(path: &Path) -> Result<Option<SystemTime>> {
+    match fs::metadata(path) {
+        Ok(meta) if meta.is_file() => meta.modified().map(Some).ctx("read mtime of", path),
+        Ok(_) => Ok(None),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).ctx("read mtime of", path),
+    }
 }
 
 /// Carries out the copies in `plan`.
