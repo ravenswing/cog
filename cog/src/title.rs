@@ -1,6 +1,7 @@
 //! Adding an H1 title to notes that lack one.
 
 use rayon::prelude::*;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -34,7 +35,7 @@ impl fmt::Display for Report<TitleEdit> {
 ///
 /// Excalidraw drawings, stored as `.excalidraw.md`, are left alone. Fails
 /// only if the vault can't be walked.
-pub fn plan_titles(vault: &Vault, skip_dirs: &[String]) -> Result<Report<TitleEdit>> {
+pub fn plan_titles(vault: &Vault, skip_dirs: &BTreeSet<String>) -> Result<Report<TitleEdit>> {
     let paths: Vec<NotePath> = vault
         .notes(skip_dirs)
         .filter(|path| !path.as_ref().is_ok_and(is_drawing))
@@ -157,7 +158,7 @@ mod tests {
         fs::write(dir.path().join("b.excalidraw.md"), "").unwrap();
 
         let vault = Vault::open(dir.path()).unwrap();
-        let plan = plan_titles(&vault, &[]).unwrap();
+        let plan = plan_titles(&vault, &BTreeSet::new()).unwrap();
 
         let paths: Vec<_> = plan.done.iter().map(|edit| &edit.path).collect();
         assert_eq!(paths, [&NotePath::new("a.md")]);
@@ -174,7 +175,7 @@ mod tests {
         fs::write(dir.path().join("b.md"), "# Titled").unwrap();
         let vault = Vault::open(dir.path()).unwrap();
 
-        let plan = plan_titles(&vault, &[]).unwrap();
+        let plan = plan_titles(&vault, &BTreeSet::new()).unwrap();
         assert_eq!(plan.done.len(), 1);
         assert_eq!(fs::read_to_string(dir.path().join("a.md")).unwrap(), "body");
 

@@ -234,14 +234,12 @@ impl Planner<'_> {
     }
 
     fn in_excluded_dir(&self, path: &NotePath) -> bool {
-        path.as_path().parent().is_some_and(|parent| {
-            parent.components().any(|c| {
-                self.config
-                    .exclude_dirs
-                    .iter()
-                    .any(|d| c.as_os_str() == d.as_str())
-            })
-        })
+        path.as_path()
+            .parent()
+            .into_iter()
+            .flat_map(Path::components)
+            .filter_map(|c| c.as_os_str().to_str())
+            .any(|dir| self.config.exclude_dirs.contains(dir))
     }
 
     fn excluded_tag(&self, path: &NotePath) -> Result<Option<Tag>> {

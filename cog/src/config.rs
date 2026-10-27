@@ -30,9 +30,9 @@ pub struct Vaults {
 #[serde(default)]
 pub struct SyncConfig {
     /// Directories never walked, in either vault.
-    pub skip_dirs: Vec<String>,
+    pub skip_dirs: BTreeSet<String>,
     /// Directories in the source vault whose notes are never synced.
-    pub exclude_dirs: Vec<String>,
+    pub exclude_dirs: BTreeSet<String>,
     /// Tags that stop a source note from being synced.
     pub exclude_tags: BTreeSet<Tag>,
 }
@@ -49,9 +49,12 @@ pub struct SteamConfig {
     pub data_path: PathBuf,
 }
 
+fn owned(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|s| s.to_string()).collect()
+}
+
 impl Default for SyncConfig {
     fn default() -> Self {
-        let owned = |names: &[&str]| names.iter().map(|s| s.to_string()).collect();
         Self {
             skip_dirs: owned(&["templates", "bases"]),
             exclude_dirs: owned(&["meetings", "projects", "people"]),
@@ -103,7 +106,7 @@ mod tests {
             config.sync.exclude_tags,
             tags(&["nbd", "no-sync", "client"])
         );
-        assert_eq!(config.sync.skip_dirs, ["templates", "bases"]);
+        assert_eq!(config.sync.skip_dirs, owned(&["templates", "bases"]));
     }
 
     #[test]
@@ -113,7 +116,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.sync.exclude_tags, tags(&["private"]));
-        assert_eq!(config.sync.exclude_dirs, ["meetings", "projects", "people"]);
+        assert_eq!(
+            config.sync.exclude_dirs,
+            owned(&["meetings", "projects", "people"])
+        );
     }
 
     #[test]

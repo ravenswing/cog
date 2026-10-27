@@ -114,8 +114,14 @@ fn frontmatter_tags(frontmatter: &Value) -> Vec<&str> {
 
 /// `#tags` in the first lines of the body, ignoring any inside `[[links]]`.
 fn inline_tags(body: &str) -> Vec<String> {
-    let head: Vec<&str> = body.lines().take(INLINE_TAG_LINES).collect();
-    let text = WIKILINK.replace_all(&head.join("\n"), "").into_owned();
+    let head_len = body
+        .split_inclusive('\n')
+        .take(INLINE_TAG_LINES)
+        .map(str::len)
+        .sum();
+    let head = body.get(..head_len).unwrap_or(body);
+    // Only allocates if there are links to remove
+    let text = WIKILINK.replace_all(head, "");
     INLINE_TAG
         .captures_iter(&text)
         .map(|cap| cap[1].to_string())

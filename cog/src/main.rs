@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::error::Error as StdError;
 use std::fs::{self, File};
+use std::iter;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Mutex;
@@ -259,14 +260,11 @@ fn sync(config: &Config, dry_run: bool, back_update: bool) -> Result<ExitCode> {
 }
 
 /// Formats an error with each of its causes.
-fn chain(e: &dyn StdError) -> String {
-    let mut out = e.to_string();
-    let mut source = e.source();
-    while let Some(cause) = source {
-        out.push_str(&format!(": {cause}"));
-        source = cause.source();
-    }
-    out
+fn chain(e: &(dyn StdError + 'static)) -> String {
+    iter::successors(Some(e), |&e| e.source())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(": ")
 }
 
 /// Logs to stdout at the requested level, and everything to a log file.

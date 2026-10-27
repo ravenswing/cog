@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -58,7 +59,7 @@ impl Vault {
     /// Directories named in `skip_dirs` are not entered, at any depth.
     pub fn notes<'a>(
         &'a self,
-        skip_dirs: &'a [String],
+        skip_dirs: &'a BTreeSet<String>,
     ) -> impl Iterator<Item = Result<NotePath>> + 'a {
         WalkDir::new(&self.root)
             .sort_by_file_name()
@@ -66,7 +67,10 @@ impl Vault {
             .filter_entry(move |entry| {
                 let skipped = entry.depth() > 0
                     && entry.file_type().is_dir()
-                    && skip_dirs.iter().any(|d| entry.file_name() == d.as_str());
+                    && entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|d| skip_dirs.contains(d));
                 !skipped
             })
             .filter_map(move |entry| match entry {
@@ -108,7 +112,7 @@ mod tests {
 
         let vault = Vault::open(dir.path()).unwrap();
         let paths: Vec<_> = vault
-            .notes(&["templates".into()])
+            .notes(&BTreeSet::from(["templates".into()]))
             .collect::<Result<_>>()
             .unwrap();
 
