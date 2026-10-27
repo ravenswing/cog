@@ -1,24 +1,185 @@
-use anyhow::Result;
-use std::path::Path;
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use std::error::Error as StdError;
+use std::fs::{self, File};
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::sync::Mutex;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::prelude::*;
 
 use cog::config::Config;
-use cog::organise::organise_by_tag;
+use cog::state;
+use cog::sync::{Action, apply, plan_sync};
+use cog::vault::Vault;
 
-fn process_vault(vault: &Path) -> Result<()> {
-    tracing::info!("Processing vault: {}", vault.display());
+/// Obsidian vault management.
+#[derive(Parser)]
+#[command(version)]
+struct Cli {
+    /// Config file [default: $COG_CONFIG_PATH or ~/.config/cog/cog.toml]
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
 
-    organise_by_tag(vault, "game", Some("games"))?;
+    /// Show more output (repeat for even more)
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
 
-    tracing::info!("Finished processing.");
-    Ok(())
+    /// Only show warnings and errors
+    #[arg(short, long, global = true, conflicts_with = "verbose")]
+    quiet: bool,
+
+    #[command(subcommand)]
+    command: Command,
 }
 
-fn main() -> Result<()> {
-    tracing_subscriber::fmt().without_time().init();
+#[derive(Subcommand)]
+enum Command {
+    /// Sync the work vault into the main vault
+    Sync {
+        /// Show what would change without writing anything
+        #[arg(long)]
+        dry_run: bool,
 
-    let conf = Config::load(&Config::default_path())?;
+        /// Don't copy notes that only changed in the main vault back to work
+        #[arg(long)]
+        no_back_update: bool,
+    },
+}
 
-    process_vault(&conf.vaults.main)?;
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    if let Err(e) = init_logging(&cli) {
+        eprintln!("warning: file logging disabled: {e:#}");
+    }
 
-    Ok(())
+    match run(cli) {
+        Ok(code) => code,
+        Err(e) => {
+            tracing::error!("{e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<ExitCode> {
+    let config_path = cli.config.unwrap_or_else(Config::default_path);
+    let config = Config::load(&config_path)?;
+
+    match cli.command {
+        Command::Sync {
+            dry_run,
+            no_back_update,
+        } => sync(&config, dry_run, !no_back_update),
+    }
+}
+
+fn sync(config: &Config, dry_run: bool, back_update: bool) -> Result<ExitCode> {
+    let src = Vault::open(&config.vaults.work)?;
+    let dest = Vault::open(&config.vaults.main)?;
+    let state_path = state::default_path();
+    let last_sync = state::read_last_sync(&state_path)?;
+
+    tracing::info!(
+        "Syncing {} -> {}",
+        src.root().display(),
+        dest.root().display()
+    );
+    let plan = plan_sync(&src, &dest, last_sync, &config.sync, back_update)?;
+
+    for note in &plan.notes {
+        match &note.action {
+            Action::Skip(_) => tracing::debug!("{}: {}", note.action, note.path.display()),
+            Action::Conflict => tracing::warn!("conflict: {}", note.path.display()),
+            action if dry_run => tracing::info!("would {action}: {}", note.path.display()),
+            _ => {}
+        }
+    }
+
+    let apply_errors = if dry_run {
+        Vec::new()
+    } else {
+        let errors = apply(&plan, &src, &dest);
+        state::write_last_sync(&state_path, plan.started)
+            .context("synced, but failed to record the sync time")?;
+        errors
+    };
+
+    for e in plan.errors.iter().chain(&apply_errors) {
+        tracing::error!("{}", chain(e));
+    }
+
+    println!(
+        "{}{} created, {} updated, {} back-updated, {} conflicts, {} skipped, {} errors",
+        if dry_run { "Dry run: " } else { "" },
+        plan.count(&Action::Create),
+        plan.count(&Action::Update),
+        plan.count(&Action::BackUpdate),
+        plan.count(&Action::Conflict),
+        plan.skipped(),
+        plan.errors.len() + apply_errors.len(),
+    );
+    if plan.count(&Action::Conflict) > 0 {
+        println!("Conflicts were changed in both vaults and need merging by hand.");
+    }
+
+    Ok(if plan.errors.is_empty() && apply_errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// Formats an error with each of its causes.
+fn chain(e: &dyn StdError) -> String {
+    let mut out = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        out.push_str(&format!(": {cause}"));
+        source = cause.source();
+    }
+    out
+}
+
+/// Logs to stdout at the requested level, and everything to a log file.
+fn init_logging(cli: &Cli) -> Result<()> {
+    let level = match (cli.quiet, cli.verbose) {
+        (true, _) => LevelFilter::WARN,
+        (false, 0) => LevelFilter::INFO,
+        (false, 1) => LevelFilter::DEBUG,
+        (false, _) => LevelFilter::TRACE,
+    };
+    let stdout = tracing_subscriber::fmt::layer()
+        .without_time()
+        .with_target(false)
+        .with_filter(level);
+
+    let log_path = dirs::state_dir()
+        .or_else(dirs::data_local_dir)
+        .context("no state directory")?
+        .join("cog/cog.log");
+    let file = log_path
+        .parent()
+        .map(fs::create_dir_all)
+        .transpose()
+        .and_then(|_| File::create(&log_path))
+        .with_context(|| format!("failed to open {}", log_path.display()));
+
+    match file {
+        Ok(file) => {
+            let file_layer = tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(Mutex::new(file))
+                .with_filter(LevelFilter::DEBUG);
+            tracing_subscriber::registry()
+                .with(stdout)
+                .with(file_layer)
+                .init();
+            Ok(())
+        }
+        Err(e) => {
+            tracing_subscriber::registry().with(stdout).init();
+            Err(e)
+        }
+    }
 }

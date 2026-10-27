@@ -19,4 +19,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2.5.0"
 
 [dev-dependencies]
-tempfile = "3" # Essential for safely testing file I/O
+tempfile = "3"

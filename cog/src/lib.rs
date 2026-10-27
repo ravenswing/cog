@@ -6,6 +6,7 @@ pub mod fsutil;
 pub mod note;
 pub mod organise;
 pub mod state;
+pub mod sync;
 pub mod tags;
 pub mod title;
 pub mod vault;
