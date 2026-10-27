@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::{Error, IoContext, Result};
-use crate::note::Note;
+use crate::note::load_tags;
 use crate::report::Report;
 use crate::tags::Tag;
 use crate::vault::{NotePath, Vault};
@@ -87,8 +87,7 @@ pub fn plan_moves(vault: &Vault, tag: &Tag, dir_name: Option<&str>) -> Result<Or
 /// Where a root note goes, or `None` if it doesn't have the tag.
 fn place(vault: &Vault, tag: &Tag, dir: &Path, name: &OsStr) -> Result<Option<Placement>> {
     let from = NotePath::new(name);
-    let note = Note::load(&vault.resolve(&from))?;
-    if !note.tags.contains(tag) {
+    if !load_tags(&vault.resolve(&from))?.contains(tag) {
         return Ok(None);
     }
     let to = NotePath::new(dir.join(name));

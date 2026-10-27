@@ -18,7 +18,7 @@ use std::time::SystemTime;
 use crate::config::SyncConfig;
 use crate::error::{Error, IoContext, Result};
 use crate::fsutil::copy_preserving_mtime;
-use crate::note::Note;
+use crate::note::load_tags;
 use crate::report::Report;
 use crate::tags::Tag;
 use crate::vault::{NotePath, Vault};
@@ -236,12 +236,8 @@ impl Planner<'_> {
     }
 
     fn excluded_tag(&self, path: &NotePath) -> Result<Option<Tag>> {
-        let note = Note::load(&self.src.resolve(path))?;
-        Ok(note
-            .tags
-            .intersection(&self.config.exclude_tags)
-            .next()
-            .cloned())
+        let tags = load_tags(&self.src.resolve(path))?;
+        Ok(tags.intersection(&self.config.exclude_tags).next().cloned())
     }
 }
 

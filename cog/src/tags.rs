@@ -19,7 +19,7 @@ const INLINE_TAG_LINES: usize = 15;
 static WIKILINK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)\[\[.*?\]\]").expect("valid regex"));
 static INLINE_TAG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|\s)#([\p{L}\p{N}_/-]+)").expect("valid regex"));
+    LazyLock::new(|| Regex::new(r"(?:^|\s)#[\p{L}\p{N}_/-]+").expect("valid regex"));
 
 /// A tag, normalised the way Obsidian compares them.
 ///
@@ -88,13 +88,12 @@ impl Borrow<str> for Tag {
 
 /// Collects the tags from a note's parsed frontmatter and the top of its body.
 pub fn extract_tags(frontmatter: Option<&Value>, body: &str) -> BTreeSet<Tag> {
-    let inline = inline_tags(body);
     frontmatter
         .map(frontmatter_tags)
         .unwrap_or_default()
         .into_iter()
-        .chain(inline.iter().map(String::as_str))
         .filter_map(Tag::parse)
+        .chain(inline_tags(body))
         .flat_map(Tag::with_parts)
         .collect()
 }
@@ -113,7 +112,7 @@ fn frontmatter_tags(frontmatter: &Value) -> Vec<&str> {
 }
 
 /// `#tags` in the first lines of the body, ignoring any inside `[[links]]`.
-fn inline_tags(body: &str) -> Vec<String> {
+fn inline_tags(body: &str) -> Vec<Tag> {
     let head_len = body
         .split_inclusive('\n')
         .take(INLINE_TAG_LINES)
@@ -122,9 +121,11 @@ fn inline_tags(body: &str) -> Vec<String> {
     let head = body.get(..head_len).unwrap_or(body);
     // Only allocates if there are links to remove
     let text = WIKILINK.replace_all(head, "");
+    // Matches start with whitespace and `#`, which `Tag::parse` strips.
+    // Without a capture group the regex only has to find each match.
     INLINE_TAG
-        .captures_iter(&text)
-        .map(|cap| cap[1].to_string())
+        .find_iter(&text)
+        .filter_map(|m| Tag::parse(m.as_str()))
         .collect()
 }
 
