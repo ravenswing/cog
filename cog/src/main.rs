@@ -15,7 +15,7 @@ use cog::check::check_vault;
 use cog::config::Config;
 use cog::lock::RunLock;
 use cog::organise::{apply_moves, plan_moves};
-use cog::query::{count_tags, tagged_notes};
+use cog::query::{Match, TagQuery, count_tags, tagged_notes};
 use cog::state;
 use cog::sync::{Action, apply, plan_sync};
 use cog::tags::Tag;
@@ -78,6 +78,24 @@ enum Command {
 
         #[arg(long, value_enum, default_value_t = TagOrder::Count)]
         sort: TagOrder,
+    },
+
+    /// List notes with the given tags, one path per line
+    Find {
+        /// Tag to look for, with or without the `#`. Repeat for more
+        #[arg(long = "tag", required = true)]
+        tags: Vec<Tag>,
+
+        /// Match notes with any of the tags, rather than all of them
+        #[arg(long)]
+        any: bool,
+
+        /// Leave out notes with this tag. Repeat for more
+        #[arg(long)]
+        without: Vec<Tag>,
+
+        #[arg(long, value_enum, default_value_t = VaultName::Main)]
+        vault: VaultName,
     },
 
     /// Download data from the Steam Web API
@@ -167,6 +185,20 @@ fn run(cli: Cli) -> Result<ExitCode> {
         } => organise(&config, &tag, dir.as_deref(), vault, dry_run),
         Command::Check { vault } => check(&config, vault),
         Command::Tags { vault, sort } => tags(&config, vault, sort),
+        Command::Find {
+            tags,
+            any,
+            without,
+            vault,
+        } => {
+            let mode = if any { Match::Any } else { Match::All };
+            let query = TagQuery {
+                tags,
+                mode,
+                without,
+            };
+            find(&config, vault, &query)
+        }
         #[cfg(feature = "steam")]
         Command::Steam(SteamCommand::Fetch) => steam_fetch(&config),
     }
@@ -218,6 +250,18 @@ fn tags(config: &Config, vault: VaultName, sort: TagOrder) -> Result<ExitCode> {
     let width = counts.iter().map(|(_, n)| n.to_string().len()).max();
     for (tag, count) in counts {
         println!("{count:>width$}  #{tag}", width = width.unwrap_or(0));
+    }
+    Ok(exit_code(!report.has_errors()))
+}
+
+fn find(config: &Config, vault: VaultName, query: &TagQuery) -> Result<ExitCode> {
+    let vault = vault.open(config)?;
+    let report = tagged_notes(&vault, &config.sync.skip_dirs)?;
+    for e in &report.errors {
+        tracing::warn!("{}", chain(e));
+    }
+    for note in report.done.iter().filter(|note| query.matches(&note.tags)) {
+        println!("{}", note.path);
     }
     Ok(exit_code(!report.has_errors()))
 }

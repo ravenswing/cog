@@ -31,6 +31,35 @@ pub fn tagged_notes(vault: &Vault, skip_dirs: &BTreeSet<String>) -> Result<Repor
         .collect())
 }
 
+/// Whether a note needs every tag in a [`TagQuery`], or just one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Match {
+    All,
+    Any,
+}
+
+/// A search for notes by tag.
+///
+/// Nested tags match their parents, so `games` finds `games/rpg`, as in
+/// Obsidian.
+#[derive(Debug, Clone)]
+pub struct TagQuery {
+    pub tags: Vec<Tag>,
+    pub mode: Match,
+    /// Tags that rule a note out, whatever else it has.
+    pub without: Vec<Tag>,
+}
+
+impl TagQuery {
+    pub fn matches(&self, tags: &BTreeSet<Tag>) -> bool {
+        let wanted = match self.mode {
+            Match::All => self.tags.iter().all(|tag| tags.contains(tag)),
+            Match::Any => self.tags.iter().any(|tag| tags.contains(tag)),
+        };
+        wanted && !self.without.iter().any(|tag| tags.contains(tag))
+    }
+}
+
 /// How many notes have each tag.
 pub fn count_tags(notes: &[Tagged]) -> BTreeMap<&Tag, usize> {
     let mut counts = BTreeMap::new();
@@ -48,6 +77,27 @@ mod tests {
 
     fn tag(raw: &str) -> Tag {
         Tag::parse(raw).unwrap()
+    }
+
+    #[test]
+    fn queries_match_all_any_and_without() {
+        let note: BTreeSet<Tag> = ["game", "games/rpg", "games"].map(tag).into();
+        let query = |tags: &[&str], mode, without: &[&str]| TagQuery {
+            tags: tags.iter().map(|t| tag(t)).collect(),
+            mode,
+            without: without.iter().map(|t| tag(t)).collect(),
+        };
+        let cases = [
+            (query(&["game", "games"], Match::All, &[]), true),
+            (query(&["game", "film"], Match::All, &[]), false),
+            (query(&["game", "film"], Match::Any, &[]), true),
+            (query(&["film"], Match::Any, &[]), false),
+            (query(&["game"], Match::All, &["games"]), false),
+            (query(&["game"], Match::All, &["film"]), true),
+        ];
+        for (query, expected) in cases {
+            assert_eq!(query.matches(&note), expected, "{query:?}");
+        }
     }
 
     #[test]
