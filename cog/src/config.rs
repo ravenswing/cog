@@ -1,9 +1,11 @@
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, IoContext, Result};
+use crate::tags::Tag;
 
 /// Environment variable that overrides the config file location.
 pub const CONFIG_ENV: &str = "COG_CONFIG_PATH";
@@ -32,7 +34,7 @@ pub struct SyncConfig {
     /// Directories in the source vault whose notes are never synced.
     pub exclude_dirs: Vec<String>,
     /// Tags that stop a source note from being synced.
-    pub exclude_tags: Vec<String>,
+    pub exclude_tags: BTreeSet<Tag>,
 }
 
 /// Steam account details for `cog steam`.
@@ -53,7 +55,10 @@ impl Default for SyncConfig {
         Self {
             skip_dirs: owned(&["templates", "bases"]),
             exclude_dirs: owned(&["meetings", "projects", "people"]),
-            exclude_tags: owned(&["nbd", "no-sync", "client"]),
+            exclude_tags: ["nbd", "no-sync", "client"]
+                .into_iter()
+                .filter_map(Tag::parse)
+                .collect(),
         }
     }
 }
@@ -87,10 +92,17 @@ impl Config {
 mod tests {
     use super::*;
 
+    fn tags(raw: &[&str]) -> BTreeSet<Tag> {
+        raw.iter().filter_map(|t| Tag::parse(t)).collect()
+    }
+
     #[test]
     fn sync_section_defaults_when_missing() {
         let config: Config = toml::from_str("[vaults]\nmain = '/m'\nwork = '/w'").unwrap();
-        assert_eq!(config.sync.exclude_tags, ["nbd", "no-sync", "client"]);
+        assert_eq!(
+            config.sync.exclude_tags,
+            tags(&["nbd", "no-sync", "client"])
+        );
         assert_eq!(config.sync.skip_dirs, ["templates", "bases"]);
     }
 
@@ -100,8 +112,22 @@ mod tests {
             "[vaults]\nmain = '/m'\nwork = '/w'\n[sync]\nexclude_tags = ['private']",
         )
         .unwrap();
-        assert_eq!(config.sync.exclude_tags, ["private"]);
+        assert_eq!(config.sync.exclude_tags, tags(&["private"]));
         assert_eq!(config.sync.exclude_dirs, ["meetings", "projects", "people"]);
+    }
+
+    #[test]
+    fn normalises_and_validates_exclude_tags() {
+        let vaults = "[vaults]\nmain = '/m'\nwork = '/w'\n";
+        let config: Config =
+            toml::from_str(&format!("{vaults}[sync]\nexclude_tags = ['#Client']")).unwrap();
+        assert_eq!(config.sync.exclude_tags, tags(&["client"]));
+        let err = toml::from_str::<Config>(&format!(
+            "{vaults}[sync]
+exclude_tags = ['2024']"
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("not a valid tag"), "{err}");
     }
 
     #[test]

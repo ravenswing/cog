@@ -5,8 +5,12 @@
 //! `rpg` alongside `games/rpg`.
 
 use regex::Regex;
+use serde::Deserialize;
 use serde_norway::Value;
+use std::borrow::Borrow;
 use std::collections::BTreeSet;
+use std::fmt;
+use std::str::FromStr;
 use std::sync::LazyLock;
 
 /// How many lines of the body are searched for inline tags.
@@ -17,18 +21,82 @@ static WIKILINK: LazyLock<Regex> =
 static INLINE_TAG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:^|\s)#([\p{L}\p{N}_/-]+)").expect("valid regex"));
 
+/// A tag, normalised the way Obsidian compares them.
+///
+/// Always trimmed, lowercase, and without a leading `#`, with at least one
+/// character that isn't a digit or `/`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(try_from = "String")]
+pub struct Tag(String);
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0:?} is not a valid tag")]
+pub struct InvalidTag(String);
+
+impl Tag {
+    /// Normalises `raw`, or returns `None` if it isn't a valid tag.
+    pub fn parse(raw: &str) -> Option<Self> {
+        let tag = raw.trim().trim_start_matches('#').to_lowercase();
+        // Obsidian requires at least one non-numeric character
+        let numeric = tag.chars().all(|c| c.is_numeric() || c == '/');
+        (!numeric).then_some(Self(tag))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The tag itself, followed by each part if it is nested.
+    pub fn with_parts(self) -> impl Iterator<Item = Tag> {
+        let parts: Vec<Tag> = self
+            .0
+            .split('/')
+            .filter(|part| !part.is_empty() && *part != self.0)
+            .map(|part| Tag(part.to_owned()))
+            .collect();
+        std::iter::once(self).chain(parts)
+    }
+}
+
+impl fmt::Display for Tag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for Tag {
+    type Err = InvalidTag;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or_else(|| InvalidTag(s.to_owned()))
+    }
+}
+
+impl TryFrom<String> for Tag {
+    type Error = InvalidTag;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl Borrow<str> for Tag {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Collects the tags from a note's parsed frontmatter and the top of its body.
-pub fn extract_tags(frontmatter: Option<&Value>, body: &str) -> BTreeSet<String> {
-    let mut tags = BTreeSet::new();
-    if let Some(frontmatter) = frontmatter {
-        for raw in frontmatter_tags(frontmatter) {
-            insert(&mut tags, raw);
-        }
-    }
-    for raw in inline_tags(body) {
-        insert(&mut tags, raw);
-    }
-    tags
+pub fn extract_tags(frontmatter: Option<&Value>, body: &str) -> BTreeSet<Tag> {
+    let inline = inline_tags(body);
+    frontmatter
+        .map(frontmatter_tags)
+        .unwrap_or_default()
+        .into_iter()
+        .chain(inline.iter().map(String::as_str))
+        .filter_map(Tag::parse)
+        .flat_map(Tag::with_parts)
+        .collect()
 }
 
 /// Tags under the `tags` or `tag` keys, as a list or comma-separated string.
@@ -54,27 +122,46 @@ fn inline_tags(body: &str) -> Vec<String> {
         .collect()
 }
 
-fn insert(tags: &mut BTreeSet<String>, raw: impl AsRef<str>) {
-    let tag = raw.as_ref().trim().trim_start_matches('#').to_lowercase();
-    // Obsidian requires at least one non-numeric character
-    if tag.is_empty() || tag.chars().all(|c| c.is_numeric() || c == '/') {
-        return;
-    }
-    if tag.contains('/') {
-        for part in tag.split('/').filter(|p| !p.is_empty()) {
-            tags.insert(part.to_string());
-        }
-    }
-    tags.insert(tag);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn tags(frontmatter: &str, body: &str) -> Vec<String> {
         let value: Value = serde_norway::from_str(frontmatter).unwrap();
-        extract_tags(Some(&value), body).into_iter().collect()
+        extract_tags(Some(&value), body)
+            .into_iter()
+            .map(|tag| tag.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn parses_and_normalises() {
+        let cases = [
+            (" #Game ", Some("game")),
+            ("no-sync", Some("no-sync")),
+            ("2024", None),
+            ("2024/01", None),
+            ("#", None),
+            ("", None),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                Tag::parse(raw).as_ref().map(Tag::as_str),
+                expected,
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_tags_yield_their_parts() {
+        let parts: Vec<String> = Tag::parse("games/2024/rpg")
+            .unwrap()
+            .with_parts()
+            .map(|tag| tag.to_string())
+            .collect();
+        assert_eq!(parts, ["games/2024/rpg", "games", "2024", "rpg"]);
+        assert_eq!(Tag::parse("game").unwrap().with_parts().count(), 1);
     }
 
     #[test]

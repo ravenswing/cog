@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::error::{Error, IoContext, Result};
-use crate::tags::extract_tags;
+use crate::tags::{Tag, extract_tags};
 
 /// How many lines of the body are searched for an H1 title.
 const TITLE_LINES: usize = 10;
@@ -23,7 +23,7 @@ pub struct Note {
     pub frontmatter: Option<String>,
     /// Everything after the frontmatter.
     pub body: String,
-    pub tags: BTreeSet<String>,
+    pub tags: BTreeSet<Tag>,
     pub mtime: SystemTime,
 }
 
@@ -176,7 +176,8 @@ mod tests {
     #[test]
     fn collects_tags() {
         let note = parse("---\ntags: [a]\n---\n#b\n").unwrap();
-        assert_eq!(note.tags, BTreeSet::from(["a".into(), "b".into()]));
+        let tags: Vec<&str> = note.tags.iter().map(Tag::as_str).collect();
+        assert_eq!(tags, ["a", "b"]);
     }
 
     #[test]

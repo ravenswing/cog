@@ -12,6 +12,7 @@ use cog::config::Config;
 use cog::organise::organise_by_tag;
 use cog::state;
 use cog::sync::{Action, apply, plan_sync};
+use cog::tags::Tag;
 use cog::title::add_titles;
 use cog::vault::Vault;
 
@@ -66,7 +67,7 @@ enum Command {
     /// Move notes in the vault root with a tag into their own directory
     Organise {
         /// Tag to look for, with or without the `#`
-        tag: String,
+        tag: Tag,
 
         /// Directory to move notes into [default: the tag]
         #[arg(long)]
@@ -166,7 +167,7 @@ fn title(config: &Config, vault: VaultName, dry_run: bool) -> Result<ExitCode> {
 
 fn organise(
     config: &Config,
-    tag: &str,
+    tag: &Tag,
     dir: Option<&str>,
     vault: VaultName,
     dry_run: bool,

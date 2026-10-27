@@ -9,7 +9,6 @@
 //! copied is seen as unchanged on the next run.
 
 use rayon::prelude::*;
-use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,6 +18,7 @@ use crate::config::SyncConfig;
 use crate::error::{Error, IoContext, Result};
 use crate::fsutil::copy_preserving_mtime;
 use crate::note::Note;
+use crate::tags::Tag;
 use crate::vault::Vault;
 
 /// How a note in both vaults has changed since the last sync.
@@ -73,7 +73,7 @@ impl fmt::Display for Action {
 pub enum SkipReason {
     Unchanged,
     ExcludedDir,
-    ExcludedTag(String),
+    ExcludedTag(Tag),
     /// Only the destination changed and back-updating is off.
     DestinationNewer,
 }
@@ -149,11 +149,6 @@ pub fn plan_sync(
         dest,
         last_sync,
         config,
-        exclude_tags: config
-            .exclude_tags
-            .iter()
-            .map(|t| t.to_lowercase())
-            .collect(),
         back_update,
     };
 
@@ -189,7 +184,6 @@ struct Planner<'a> {
     dest: &'a Vault,
     last_sync: SystemTime,
     config: &'a SyncConfig,
-    exclude_tags: BTreeSet<String>,
     back_update: bool,
 }
 
@@ -234,12 +228,13 @@ impl Planner<'_> {
         })
     }
 
-    fn excluded_tag(&self, path: &Path) -> Result<Option<String>> {
+    fn excluded_tag(&self, path: &Path) -> Result<Option<Tag>> {
         let note = Note::load(&self.src.root().join(path))?;
         Ok(note
             .tags
-            .into_iter()
-            .find(|tag| self.exclude_tags.contains(tag)))
+            .intersection(&self.config.exclude_tags)
+            .next()
+            .cloned())
     }
 }
 

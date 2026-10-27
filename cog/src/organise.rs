@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::error::{Error, IoContext, Result};
 use crate::note::Note;
+use crate::tags::Tag;
 use crate::vault::Vault;
 
 /// The outcome of organising a vault.
@@ -25,12 +26,11 @@ pub struct OrganiseReport {
 /// `dry_run`, nothing is created or moved.
 pub fn organise_by_tag(
     vault: &Vault,
-    tag: &str,
+    tag: &Tag,
     dir_name: Option<&str>,
     dry_run: bool,
 ) -> Result<OrganiseReport> {
-    let tag = tag.trim_start_matches('#').to_lowercase();
-    let tag_dir = vault.root().join(dir_name.unwrap_or(&tag));
+    let tag_dir = vault.root().join(dir_name.unwrap_or(tag.as_str()));
     let mut report = OrganiseReport::default();
 
     let mut entries: Vec<_> = fs::read_dir(vault.root())
@@ -45,7 +45,7 @@ pub fn organise_by_tag(
             continue;
         }
         match Note::load(&path) {
-            Ok(note) if note.tags.contains(&tag) => {}
+            Ok(note) if note.tags.contains(tag) => {}
             Ok(_) => continue,
             Err(e) => {
                 report.errors.push(e);
@@ -75,6 +75,10 @@ pub fn organise_by_tag(
 mod tests {
     use super::*;
 
+    fn game() -> Tag {
+        Tag::parse("#Game").unwrap()
+    }
+
     #[test]
     fn moves_tagged_root_notes_without_overwriting() {
         let dir = tempfile::tempdir().unwrap();
@@ -89,7 +93,7 @@ mod tests {
         fs::write(root.join("sub/e.md"), "#game").unwrap();
 
         let vault = Vault::open(root).unwrap();
-        let report = organise_by_tag(&vault, "game", Some("games"), false).unwrap();
+        let report = organise_by_tag(&vault, &game(), Some("games"), false).unwrap();
 
         assert_eq!(report.moved, [PathBuf::from("a.md"), PathBuf::from("b.md")]);
         assert_eq!(report.clashes, [PathBuf::from("c.md")]);
@@ -109,7 +113,7 @@ mod tests {
         fs::write(dir.path().join("a.md"), "#game").unwrap();
 
         let vault = Vault::open(dir.path()).unwrap();
-        let report = organise_by_tag(&vault, "game", None, true).unwrap();
+        let report = organise_by_tag(&vault, &game(), None, true).unwrap();
 
         assert_eq!(report.moved, [PathBuf::from("a.md")]);
         assert!(dir.path().join("a.md").exists());
