@@ -8,6 +8,7 @@ use std::iter;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Mutex;
+use std::time::{Duration, UNIX_EPOCH};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::prelude::*;
 
@@ -51,6 +52,14 @@ enum Command {
         dry_run: bool,
 
         /// Don't copy notes that only changed in the main vault back to work
+        #[arg(long)]
+        no_back_update: bool,
+    },
+
+    /// Show when the vaults were last synced and what a sync would do now
+    Status {
+        /// Leave out notes that only changed in the main vault, as
+        /// `sync --no-back-update` would
         #[arg(long)]
         no_back_update: bool,
     },
@@ -176,6 +185,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
             no_back_update,
         } => sync(&config, dry_run, !no_back_update),
+        Command::Status { no_back_update } => status(&config, !no_back_update),
         Command::Title { vault, dry_run } => title(&config, vault, dry_run),
         Command::Organise {
             tag,
@@ -328,6 +338,43 @@ fn exit_code(success: bool) -> ExitCode {
     }
 }
 
+fn status(config: &Config, back_update: bool) -> Result<ExitCode> {
+    let src = Vault::open(&config.vaults.work)?;
+    let dest = Vault::open(&config.vaults.main)?;
+    let last_sync = state::read_last_sync(&state::default_path())?;
+    let plan = plan_sync(&src, &dest, last_sync, &config.sync, back_update)?;
+    for e in &plan.errors {
+        tracing::warn!("{}", chain(e));
+    }
+
+    let last = if last_sync == UNIX_EPOCH {
+        "never".to_owned()
+    } else {
+        // A sync time in the future means the clock went back since
+        let elapsed = last_sync.elapsed().unwrap_or_default();
+        ago(elapsed)
+    };
+    println!("Last sync: {last}");
+    println!("Next sync: {}", plan.summary());
+    for note in plan.notes.iter().filter(|n| n.action == Action::Conflict) {
+        println!("Conflict: {}", note.path);
+    }
+    Ok(exit_code(plan.errors.is_empty()))
+}
+
+/// Describes how long ago something happened, to the largest whole unit.
+fn ago(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    let (count, unit) = match secs {
+        0..60 => return "just now".to_owned(),
+        60..3600 => (secs / 60, "minute"),
+        3600..86400 => (secs / 3600, "hour"),
+        _ => (secs / 86400, "day"),
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} {unit}{plural} ago")
+}
+
 fn sync(config: &Config, dry_run: bool, back_update: bool) -> Result<ExitCode> {
     let src = Vault::open(&config.vaults.work)?;
     let dest = Vault::open(&config.vaults.main)?;
@@ -427,6 +474,28 @@ fn init_logging(cli: &Cli) -> Result<()> {
         Err(e) => {
             tracing_subscriber::registry().with(stderr).init();
             Err(e)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ago_uses_the_largest_whole_unit() {
+        let cases = [
+            (0, "just now"),
+            (59, "just now"),
+            (60, "1 minute ago"),
+            (150, "2 minutes ago"),
+            (3600, "1 hour ago"),
+            (86_399, "23 hours ago"),
+            (86_400, "1 day ago"),
+            (90 * 86_400, "90 days ago"),
+        ];
+        for (secs, expected) in cases {
+            assert_eq!(ago(Duration::from_secs(secs)), expected, "{secs}");
         }
     }
 }

@@ -42,6 +42,7 @@ data_path = "/path/to/data"
   - Notes changed in only one vault since the last sync are copied to the other.
   - Notes changed in both are reported as conflicts and left alone.
   - `--dry-run` shows what would happen, `--no-back-update` stops changes in main being copied back to work.
+- `cog status` - shows when the vaults were last synced, what `cog sync` would do now, and any conflicts. Writes nothing. Takes `--no-back-update` like `sync`.
 - `cog title` - adds an H1 title from the filename to notes without one, dropping any `prefix - ` from the name. Defaults to the work vault.
 - `cog organise <tag>` - moves notes in the root of the main vault with `<tag>` into a directory named after the tag, or `--dir <name>`.
 - `cog check` - lists notes that Obsidian can't fully read: frontmatter that is unclosed or isn't valid YAML, and names or contents that aren't UTF-8. Exits with an error if it finds any. Defaults to the main vault.
