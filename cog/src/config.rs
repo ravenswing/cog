@@ -14,6 +14,7 @@ pub struct Config {
     pub vaults: Vaults,
     #[serde(default)]
     pub sync: SyncConfig,
+    pub steam: Option<SteamConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +33,18 @@ pub struct SyncConfig {
     pub exclude_dirs: Vec<String>,
     /// Tags that stop a source note from being synced.
     pub exclude_tags: Vec<String>,
+}
+
+/// Steam account details for `cog steam`.
+#[derive(Debug, Deserialize)]
+pub struct SteamConfig {
+    /// File holding the Steam Web API key. Relative paths are resolved
+    /// against the config file's directory.
+    pub api_file: PathBuf,
+    /// The 64-bit Steam ID of the account.
+    pub id: u64,
+    /// Directory that downloaded data is written to.
+    pub data_path: PathBuf,
 }
 
 impl Default for SyncConfig {
@@ -59,10 +72,14 @@ impl Config {
     /// Reads and parses the config at `path`.
     pub fn load(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path).ctx("read config", path)?;
-        toml::from_str(&contents).map_err(|source| Error::Config {
+        let mut config: Self = toml::from_str(&contents).map_err(|source| Error::Config {
             path: path.to_owned(),
             source,
-        })
+        })?;
+        if let (Some(steam), Some(dir)) = (&mut config.steam, path.parent()) {
+            steam.api_file = dir.join(&steam.api_file);
+        }
+        Ok(config)
     }
 }
 
@@ -90,7 +107,22 @@ mod tests {
     #[test]
     fn ignores_unknown_sections() {
         let config: Config =
-            toml::from_str("[vaults]\nmain = '/m'\nwork = '/w'\n[steam]\nid = 1").unwrap();
+            toml::from_str("[vaults]\nmain = '/m'\nwork = '/w'\n[other]\nid = 1").unwrap();
         assert_eq!(config.vaults.main, Path::new("/m"));
+        assert!(config.steam.is_none());
+    }
+
+    #[test]
+    fn resolves_api_file_against_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cog.toml");
+        fs::write(
+            &path,
+            "[vaults]\nmain = '/m'\nwork = '/w'\n\
+             [steam]\napi_file = 'key'\nid = 1\ndata_path = '/d'\nusername = 'x'",
+        )
+        .unwrap();
+        let steam = Config::load(&path).unwrap().steam.unwrap();
+        assert_eq!(steam.api_file, dir.path().join("key"));
     }
 }

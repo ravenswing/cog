@@ -6,6 +6,8 @@ pub mod fsutil;
 pub mod note;
 pub mod organise;
 pub mod state;
+#[cfg(feature = "steam")]
+pub mod steam;
 pub mod sync;
 pub mod tags;
 pub mod title;

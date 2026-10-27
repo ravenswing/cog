@@ -58,6 +58,11 @@ enum Command {
         dry_run: bool,
     },
 
+    /// Download data from the Steam Web API
+    #[cfg(feature = "steam")]
+    #[command(subcommand)]
+    Steam(SteamCommand),
+
     /// Move notes in the vault root with a tag into their own directory
     Organise {
         /// Tag to look for, with or without the `#`
@@ -74,6 +79,13 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+}
+
+#[cfg(feature = "steam")]
+#[derive(Subcommand)]
+enum SteamCommand {
+    /// Save the player summary and owned games to the configured data path
+    Fetch,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -123,6 +135,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
             vault,
             dry_run,
         } => organise(&config, &tag, dir.as_deref(), vault, dry_run),
+        #[cfg(feature = "steam")]
+        Command::Steam(SteamCommand::Fetch) => steam_fetch(&config),
     }
 }
 
@@ -178,6 +192,22 @@ fn organise(
         report.errors.len()
     );
     Ok(exit_code(report.errors.is_empty()))
+}
+
+#[cfg(feature = "steam")]
+fn steam_fetch(config: &Config) -> Result<ExitCode> {
+    let steam = config
+        .steam
+        .as_ref()
+        .context("no [steam] section in the config")?;
+    let fetched = cog::steam::fetch_player_data(steam)?;
+    println!(
+        "Saved {} and {} ({} games)",
+        fetched.summary.display(),
+        fetched.owned_games.display(),
+        fetched.game_count
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 fn exit_code(success: bool) -> ExitCode {
