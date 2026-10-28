@@ -278,7 +278,7 @@ fn planning_writes_nothing() {
     f.write(&f.src, "b.md", "changed", 10);
     f.write(&f.dest, "b.md", "old", 120);
 
-    f.plan(true);
+    let _plan = f.plan(true);
     assert!(!f.dest.root().join("a.md").exists());
     assert_eq!(read(&f.dest, "b.md"), "old");
 }

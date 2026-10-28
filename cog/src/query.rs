@@ -51,6 +51,7 @@ pub struct TagQuery {
 }
 
 impl TagQuery {
+    #[must_use]
     pub fn matches(&self, tags: &BTreeSet<Tag>) -> bool {
         let wanted = match self.mode {
             Match::All => self.tags.iter().all(|tag| tags.contains(tag)),
@@ -61,6 +62,7 @@ impl TagQuery {
 }
 
 /// How many notes have each tag.
+#[must_use]
 pub fn count_tags(notes: &[Tagged]) -> BTreeMap<&Tag, usize> {
     let mut counts = BTreeMap::new();
     for tag in notes.iter().flat_map(|note| &note.tags) {

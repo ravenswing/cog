@@ -22,6 +22,7 @@ pub struct Move {
 
 /// What organising a vault will do, or did.
 #[derive(Debug, Default)]
+#[must_use = "a plan, or the result of applying one, holds errors that need reporting"]
 pub struct OrganisePlan {
     pub moves: Vec<Move>,
     /// Notes left in place because the directory already has a note with

@@ -9,12 +9,14 @@ use crate::error::{Error, Result};
 /// Collect an iterator of `Result<T>` into one, in parallel or not, and the
 /// order of each list follows the order of the iterator.
 #[derive(Debug)]
+#[must_use = "the errors in a report are lost if it is ignored"]
 pub struct Report<T> {
     pub done: Vec<T>,
     pub errors: Vec<Error>,
 }
 
 impl<T> Report<T> {
+    #[must_use]
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }

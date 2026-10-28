@@ -96,6 +96,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Resolves `link`, the text between the brackets of a wikilink.
+    #[must_use]
     pub fn resolve(&self, link: &str) -> Target<'a> {
         let end = link.find(['#', '|']).unwrap_or(link.len());
         let name = link.get(..end).unwrap_or(link).trim();
@@ -137,6 +138,7 @@ fn key(path: &str) -> String {
 }
 
 /// Each link to a note that doesn't exist, with the note it's in.
+#[must_use]
 pub fn broken_links<'a>(notes: &'a [Linked], resolver: &Resolver) -> Vec<(&'a NotePath, &'a str)> {
     notes
         .iter()
@@ -150,6 +152,7 @@ pub fn broken_links<'a>(notes: &'a [Linked], resolver: &Resolver) -> Vec<(&'a No
 }
 
 /// Notes that no other note links to.
+#[must_use]
 pub fn orphans<'a>(notes: &'a [Linked], resolver: &Resolver) -> Vec<&'a NotePath> {
     let linked: BTreeSet<&NotePath> = notes
         .iter()

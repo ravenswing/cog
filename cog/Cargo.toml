@@ -90,6 +90,12 @@ expl_impl_clone_on_copy = "warn"
 infallible_try_from = "warn"
 dbg_macro = "warn"
 
+# Google Rust style guide - globs, borrowing, and #[must_use] on pure functions
+wildcard_imports = "warn"
+ref_option = "warn"
+implicit_clone = "warn"
+must_use_candidate = "warn"
+
 # Don't `allow` Your Way Around These Lints - every suppression must be
 # a deliberate #[expect(..., reason = "…")] rather than a silent #[allow]
 allow_attributes = "warn"

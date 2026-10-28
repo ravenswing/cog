@@ -44,6 +44,7 @@ pub struct InvalidTag(String);
 
 impl Tag {
     /// Normalises `raw`, or returns `None` if it isn't a valid tag.
+    #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         let tag = raw.trim().trim_start_matches('#').to_lowercase();
         // Obsidian requires at least one non-numeric character
@@ -51,6 +52,7 @@ impl Tag {
         (!numeric).then_some(Self(tag))
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }

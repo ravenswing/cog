@@ -100,6 +100,7 @@ pub struct Split<'a> {
 ///
 /// Frontmatter only counts when the very first line is `---`. Returns `None`
 /// when that block is never closed.
+#[must_use]
 pub fn split_frontmatter(content: &str) -> Option<Split<'_>> {
     let opening = content
         .split_inclusive('\n')

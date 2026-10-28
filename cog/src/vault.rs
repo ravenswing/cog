@@ -19,6 +19,7 @@ impl NotePath {
         Self(path.into())
     }
 
+    #[must_use]
     pub fn as_path(&self) -> &Path {
         &self.0
     }
@@ -46,11 +47,13 @@ impl Vault {
         Ok(Self { root })
     }
 
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
     /// The full path of a note in this vault.
+    #[must_use]
     pub fn resolve(&self, path: &NotePath) -> PathBuf {
         self.root.join(&path.0)
     }

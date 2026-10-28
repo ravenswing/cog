@@ -38,6 +38,7 @@ pub enum Change {
 ///
 /// A note counts as changed only if its mtime is strictly after the last
 /// sync.
+#[must_use]
 pub fn change(src: SystemTime, dest: SystemTime, last_sync: SystemTime) -> Change {
     match (src > last_sync, dest > last_sync) {
         (false, false) => Change::Neither,
@@ -102,6 +103,7 @@ pub struct Planned {
 
 /// Everything a sync will do, worked out without writing anything.
 #[derive(Debug)]
+#[must_use = "a plan, or the result of applying one, holds errors that need reporting"]
 pub struct SyncPlan {
     /// When planning started, recorded as the new last sync time.
     pub started: SystemTime,
@@ -116,6 +118,7 @@ impl SyncPlan {
     ///
     /// Recording a sync with failures would make the failed notes look
     /// unchanged on the next run, so they would never be retried.
+    #[must_use]
     pub fn completed_at(&self) -> Option<SystemTime> {
         self.errors.is_empty().then_some(self.started)
     }
@@ -125,6 +128,7 @@ impl SyncPlan {
         clippy::arithmetic_side_effects,
         reason = "each count is at most the number of notes"
     )]
+    #[must_use]
     pub fn summary(&self) -> Summary {
         let summary = Summary {
             errors: self.errors.len(),

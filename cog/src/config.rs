@@ -68,6 +68,7 @@ impl Default for SyncConfig {
 
 impl Config {
     /// Path from `COG_CONFIG_PATH`, else `<config dir>/cog/cog.toml`.
+    #[must_use]
     pub fn default_path() -> PathBuf {
         match env::var_os(CONFIG_ENV) {
             Some(path) => PathBuf::from(path),
