@@ -87,13 +87,13 @@ fn split_tags<'a>(path: &Path, content: &'a str) -> Result<(Split<'a>, BTreeSet<
 
 /// A note's contents, split around its frontmatter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Split<'a> {
+pub struct Split<'content> {
     /// Everything before the body, including both `---` lines. Empty when
     /// there is no frontmatter.
-    pub header: &'a str,
+    pub header: &'content str,
     /// The text between the `---` lines, if there are any.
-    pub frontmatter: Option<&'a str>,
-    pub body: &'a str,
+    pub frontmatter: Option<&'content str>,
+    pub body: &'content str,
 }
 
 /// Splits a note around its frontmatter.

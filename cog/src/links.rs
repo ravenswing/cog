@@ -54,8 +54,8 @@ pub fn linked_notes(vault: &Vault, skip_dirs: &BTreeSet<String>) -> Result<Repor
 
 /// What a link points to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Target<'a> {
-    Note(&'a NotePath),
+pub enum Target<'notes> {
+    Note(&'notes NotePath),
     /// A heading or block in the same note, as in `[[#Heading]]`.
     SameNote,
     /// A file with an extension other than `.md`, such as an image. Only
@@ -66,18 +66,18 @@ pub enum Target<'a> {
 
 /// Finds the note a link points to.
 #[derive(Debug)]
-pub struct Resolver<'a> {
+pub struct Resolver<'notes> {
     /// Each note's lowercase path without `.md`.
-    by_path: BTreeMap<String, &'a NotePath>,
+    by_path: BTreeMap<String, &'notes NotePath>,
     /// Notes by lowercase file name without `.md`. Where names clash, the
     /// note nearest the vault root comes first.
-    by_name: BTreeMap<String, Vec<&'a NotePath>>,
+    by_name: BTreeMap<String, Vec<&'notes NotePath>>,
 }
 
-impl<'a> Resolver<'a> {
+impl<'notes> Resolver<'notes> {
     /// Indexes `notes`. Notes whose paths aren't UTF-8 can't be linked to,
     /// so are left out.
-    pub fn new(notes: impl IntoIterator<Item = &'a NotePath>) -> Self {
+    pub fn new(notes: impl IntoIterator<Item = &'notes NotePath>) -> Self {
         let mut by_path = BTreeMap::new();
         let mut by_name: BTreeMap<String, Vec<&NotePath>> = BTreeMap::new();
         for note in notes {
@@ -97,7 +97,7 @@ impl<'a> Resolver<'a> {
 
     /// Resolves `link`, the text between the brackets of a wikilink.
     #[must_use]
-    pub fn resolve(&self, link: &str) -> Target<'a> {
+    pub fn resolve(&self, link: &str) -> Target<'notes> {
         let end = link.find(['#', '|']).unwrap_or(link.len());
         let name = link.get(..end).unwrap_or(link).trim();
         if name.is_empty() {
@@ -166,7 +166,7 @@ pub fn broken_links<'notes>(
 
 /// Notes that no other note links to.
 #[must_use]
-pub fn orphans<'a>(notes: &'a [Linked], resolver: &Resolver) -> Vec<&'a NotePath> {
+pub fn orphans<'notes>(notes: &'notes [Linked], resolver: &Resolver) -> Vec<&'notes NotePath> {
     let linked: BTreeSet<&NotePath> = notes
         .iter()
         .flat_map(|note| {

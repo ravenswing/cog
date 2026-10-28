@@ -222,11 +222,11 @@ pub fn plan_sync(
     })
 }
 
-struct Planner<'a> {
-    src: &'a Vault,
-    dest: &'a Vault,
+struct Planner<'plan> {
+    src: &'plan Vault,
+    dest: &'plan Vault,
     last_sync: SystemTime,
-    config: &'a SyncConfig,
+    config: &'plan SyncConfig,
     back_update: BackUpdate,
 }
 
