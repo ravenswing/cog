@@ -35,7 +35,7 @@ pub enum SteamRating {
 pub struct SteamReviews {
     pub rating: SteamRating,
     /// Percentage of positive reviews.
-    pub perc: f64,
+    pub percent: f64,
     pub total_reviews: u32,
 }
 
