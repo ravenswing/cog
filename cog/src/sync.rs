@@ -29,7 +29,9 @@ use crate::vault::{NotePath, Vault};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
     Neither,
+    /// Only the source copy changed.
     Source,
+    /// Only the destination copy changed.
     Destination,
     Both,
 }
@@ -82,6 +84,7 @@ impl fmt::Display for Action {
     }
 }
 
+/// Why sync leaves a note alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipReason {
     Unchanged,

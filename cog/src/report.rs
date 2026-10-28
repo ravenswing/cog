@@ -11,7 +11,9 @@ use crate::error::{Error, Result};
 #[derive(Debug)]
 #[must_use = "the errors in a report are lost if it is ignored"]
 pub struct Report<T> {
+    /// The result of each item that succeeded.
     pub done: Vec<T>,
+    /// Why each item that failed did so.
     pub errors: Vec<Error>,
 }
 

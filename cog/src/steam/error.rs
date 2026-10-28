@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+/// Everything that can go wrong talking to Steam or saving what it returns.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("failed to read the Steam API key from {path}")]

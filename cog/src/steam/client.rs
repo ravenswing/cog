@@ -93,6 +93,8 @@ impl Client {
         Ok(response.response)
     }
 
+    /// Fetches the profile for `steam_id`. Fails with [`Error::Missing`] if
+    /// Steam returns no player.
     pub fn player_summary(&self, steam_id: u64) -> Result<PlayerSummary> {
         let players: Players =
             self.get("ISteamUser/GetPlayerSummaries/v0002/", "steamids", steam_id)?;
@@ -103,6 +105,8 @@ impl Client {
             .ok_or(Error::Missing("player summary"))
     }
 
+    /// Fetches every game `steam_id` owns. Fails with [`Error::Missing`] if
+    /// the profile's game details are private.
     pub fn owned_games(&self, steam_id: u64) -> Result<OwnedGames> {
         let owned: OwnedGamesResponse =
             self.get("IPlayerService/GetOwnedGames/v0001/", "steamid", steam_id)?;

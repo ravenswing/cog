@@ -38,6 +38,7 @@ static INLINE_TAG: LazyLock<Regex> =
 #[serde(try_from = "String")]
 pub struct Tag(String);
 
+/// Text that can't be read as a tag, such as an empty or all-numeric one.
 #[derive(Debug, thiserror::Error)]
 #[error("{0:?} is not a valid tag")]
 pub struct InvalidTag(String);
