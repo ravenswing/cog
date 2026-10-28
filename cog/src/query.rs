@@ -65,9 +65,11 @@ impl TagQuery {
 #[must_use]
 pub fn count_tags(notes: &[Tagged]) -> BTreeMap<&Tag, usize> {
     let mut counts = BTreeMap::new();
-    for tag in notes.iter().flat_map(|note| &note.tags) {
-        let count: &mut usize = counts.entry(tag).or_default();
-        *count = count.saturating_add(1);
+    for note in notes {
+        for tag in &note.tags {
+            let count: &mut usize = counts.entry(tag).or_default();
+            *count = count.saturating_add(1);
+        }
     }
     counts
 }

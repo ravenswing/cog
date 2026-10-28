@@ -5,7 +5,7 @@ use std::error::Error as StdError;
 use std::fs::{self, File};
 use std::io::{self, IsTerminal};
 use std::iter;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Mutex;
 use std::time::{Duration, UNIX_EPOCH};
@@ -289,7 +289,8 @@ fn find(config: &Config, vault: VaultName, query: &TagQuery) -> Result<ExitCode>
     for e in &report.errors {
         tracing::warn!("{}", chain(e));
     }
-    for note in report.done.iter().filter(|note| query.matches(&note.tags)) {
+    let matching = report.done.iter().filter(|note| query.matches(&note.tags));
+    for note in matching {
         println!("{}", note.path);
     }
     Ok(exit_code(!report.has_errors()))
@@ -410,7 +411,8 @@ fn status(config: &Config, back_update: BackUpdate) -> Result<ExitCode> {
     };
     println!("Last sync: {last}");
     println!("Next sync: {}", plan.summary());
-    for note in plan.notes.iter().filter(|n| n.action == Action::Conflict) {
+    let conflicts = plan.notes.iter().filter(|n| n.action == Action::Conflict);
+    for note in conflicts {
         println!("Conflict: {}", note.path);
     }
     Ok(exit_code(plan.errors.is_empty()))
@@ -506,11 +508,7 @@ fn init_logging(cli: &Cli) -> Result<()> {
         .or_else(dirs::data_local_dir)
         .context("no state directory")?
         .join("cog/cog.log");
-    let file = log_path
-        .parent()
-        .map(fs::create_dir_all)
-        .transpose()
-        .and_then(|_| File::create(&log_path))
+    let file = create_with_parents(&log_path)
         .with_context(|| format!("failed to open {}", log_path.display()));
 
     match file {
@@ -530,6 +528,14 @@ fn init_logging(cli: &Cli) -> Result<()> {
             Err(e)
         }
     }
+}
+
+/// Creates the file at `path`, and any directories it needs.
+fn create_with_parents(path: &Path) -> io::Result<File> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    File::create(path)
 }
 
 #[cfg(test)]

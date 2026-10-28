@@ -167,17 +167,16 @@ pub fn broken_links<'notes>(
 /// Notes that no other note links to.
 #[must_use]
 pub fn orphans<'notes>(notes: &'notes [Linked], resolver: &Resolver) -> Vec<&'notes NotePath> {
-    let linked: BTreeSet<&NotePath> = notes
-        .iter()
-        .flat_map(|note| {
-            note.links
-                .iter()
-                .filter_map(move |link| match resolver.resolve(link) {
-                    Target::Note(target) if *target != note.path => Some(target),
-                    _ => None,
-                })
-        })
-        .collect();
+    let mut linked: BTreeSet<&NotePath> = BTreeSet::new();
+    for note in notes {
+        for link in &note.links {
+            if let Target::Note(target) = resolver.resolve(link)
+                && *target != note.path
+            {
+                linked.insert(target);
+            }
+        }
+    }
     notes
         .iter()
         .map(|note| &note.path)
