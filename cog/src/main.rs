@@ -19,7 +19,7 @@ use cog::lock::RunLock;
 use cog::organise::{apply_moves, plan_moves};
 use cog::query::{Match, TagQuery, count_tags, tagged_notes};
 use cog::state;
-use cog::sync::{Action, apply, plan_sync};
+use cog::sync::{Action, BackUpdate, apply, plan_sync};
 use cog::tags::Tag;
 use cog::title::{apply_titles, plan_titles};
 use cog::vault::Vault;
@@ -202,8 +202,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Sync {
             dry_run,
             no_back_update,
-        } => sync(&config, dry_run, !no_back_update),
-        Command::Status { no_back_update } => status(&config, !no_back_update),
+        } => sync(&config, dry_run, back_update(no_back_update)),
+        Command::Status { no_back_update } => status(&config, back_update(no_back_update)),
         Command::Title { vault, dry_run } => title(&config, vault, dry_run),
         Command::Organise {
             tag,
@@ -376,6 +376,14 @@ fn lock_unless(dry_run: bool) -> Result<Option<RunLock>> {
     Ok(Some(RunLock::acquire(&state::default_path())?))
 }
 
+fn back_update(no_back_update: bool) -> BackUpdate {
+    if no_back_update {
+        BackUpdate::Disabled
+    } else {
+        BackUpdate::Enabled
+    }
+}
+
 fn exit_code(success: bool) -> ExitCode {
     if success {
         ExitCode::SUCCESS
@@ -384,7 +392,7 @@ fn exit_code(success: bool) -> ExitCode {
     }
 }
 
-fn status(config: &Config, back_update: bool) -> Result<ExitCode> {
+fn status(config: &Config, back_update: BackUpdate) -> Result<ExitCode> {
     let src = Vault::open(&config.vaults.work)?;
     let dest = Vault::open(&config.vaults.main)?;
     let last_sync = state::read_last_sync(&state::default_path())?;
@@ -421,7 +429,7 @@ fn ago(elapsed: Duration) -> String {
     format!("{count} {unit}{plural} ago")
 }
 
-fn sync(config: &Config, dry_run: bool, back_update: bool) -> Result<ExitCode> {
+fn sync(config: &Config, dry_run: bool, back_update: BackUpdate) -> Result<ExitCode> {
     let src = Vault::open(&config.vaults.work)?;
     let dest = Vault::open(&config.vaults.main)?;
     let state_path = state::default_path();

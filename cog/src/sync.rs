@@ -48,6 +48,14 @@ pub fn change(src: SystemTime, dest: SystemTime, last_sync: SystemTime) -> Chang
     }
 }
 
+/// Whether sync copies notes that only changed in the destination back to
+/// the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackUpdate {
+    Enabled,
+    Disabled,
+}
+
 /// What sync will do with one note.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -183,7 +191,7 @@ pub fn plan_sync(
     dest: &Vault,
     last_sync: SystemTime,
     config: &SyncConfig,
-    back_update: bool,
+    back_update: BackUpdate,
 ) -> Result<SyncPlan> {
     check_separate(src, dest)?;
     let started = SystemTime::now();
@@ -219,7 +227,7 @@ struct Planner<'a> {
     dest: &'a Vault,
     last_sync: SystemTime,
     config: &'a SyncConfig,
-    back_update: bool,
+    back_update: BackUpdate,
 }
 
 impl Planner<'_> {
@@ -236,7 +244,9 @@ impl Planner<'_> {
                 match change(src, dest, self.last_sync) {
                     Change::Neither => return Ok(Action::Skip(SkipReason::Unchanged)),
                     Change::Source => Action::Update,
-                    Change::Destination if self.back_update => Action::BackUpdate,
+                    Change::Destination if self.back_update == BackUpdate::Enabled => {
+                        Action::BackUpdate
+                    }
                     Change::Destination => Action::Skip(SkipReason::DestinationNewer),
                     // A copy from a sync whose time wasn't recorded. The
                     // mtime clock is coarse, so two separate edits can share

@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 
 use cog::config::SyncConfig;
-use cog::sync::{Action, SkipReason, SyncPlan, apply, plan_sync};
+use cog::sync::{Action, BackUpdate, SkipReason, SyncPlan, apply, plan_sync};
 use cog::vault::Vault;
 
 /// A source and destination vault, with a last sync an hour ago.
@@ -43,7 +43,7 @@ impl Fixture {
         filetime::set_file_mtime(&path, FileTime::from_system_time(ago(mins))).unwrap();
     }
 
-    fn plan(&self, back_update: bool) -> SyncPlan {
+    fn plan(&self, back_update: BackUpdate) -> SyncPlan {
         plan_sync(
             &self.src,
             &self.dest,
@@ -56,7 +56,7 @@ impl Fixture {
 
     /// Plans and applies a sync, then records it as the last sync.
     fn sync(&mut self) -> SyncPlan {
-        let plan = self.plan(true);
+        let plan = self.plan(BackUpdate::Enabled);
         let planning_errors = plan.errors.len();
         let plan = self.apply(plan);
         assert_eq!(plan.errors.len(), planning_errors, "a copy failed");
@@ -131,7 +131,7 @@ fn back_updates_changed_destination_only_when_enabled() {
     f.write(&f.src, "a.md", "old", 120);
     f.write(&f.dest, "a.md", "new", 10);
 
-    let plan = f.plan(false);
+    let plan = f.plan(BackUpdate::Disabled);
     assert_eq!(
         Fixture::action(&plan, "a.md"),
         Action::Skip(SkipReason::DestinationNewer)
@@ -173,7 +173,7 @@ fn skips_unchanged_notes() {
     f.write(&f.src, "a.md", "same", 120);
     f.write(&f.dest, "a.md", "same", 120);
 
-    let plan = f.plan(true);
+    let plan = f.plan(BackUpdate::Enabled);
     assert_eq!(
         Fixture::action(&plan, "a.md"),
         Action::Skip(SkipReason::Unchanged)
@@ -237,7 +237,7 @@ fn failed_copies_are_retried_next_run() {
     f.write(&f.dest, "a.md", "old", 120);
 
     set_mode(&f.dest, 0o555);
-    let plan = f.plan(true);
+    let plan = f.plan(BackUpdate::Enabled);
     let plan = f.apply(plan);
     set_mode(&f.dest, 0o755);
     assert_eq!(plan.errors.len(), 1);
@@ -258,7 +258,7 @@ fn notes_copied_in_a_failed_run_are_not_conflicts() {
     let sub = f.dest.root().join("sub");
 
     fs::set_permissions(&sub, fs::Permissions::from_mode(0o555)).unwrap();
-    let plan = f.plan(true);
+    let plan = f.plan(BackUpdate::Enabled);
     let plan = f.apply(plan);
     fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(plan.errors.len(), 1);
@@ -278,7 +278,7 @@ fn planning_writes_nothing() {
     f.write(&f.src, "b.md", "changed", 10);
     f.write(&f.dest, "b.md", "old", 120);
 
-    let _plan = f.plan(true);
+    let _plan = f.plan(BackUpdate::Enabled);
     assert!(!f.dest.root().join("a.md").exists());
     assert_eq!(read(&f.dest, "b.md"), "old");
 }
