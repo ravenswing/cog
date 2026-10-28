@@ -137,17 +137,30 @@ fn key(path: &str) -> String {
     }
 }
 
-/// Each link to a note that doesn't exist, with the note it's in.
+/// A link to a note that doesn't exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BrokenLink<'notes> {
+    /// The note the link is in.
+    pub note: &'notes NotePath,
+    /// The text between the brackets.
+    pub link: &'notes str,
+}
+
+/// Each link to a note that doesn't exist.
 #[must_use]
-pub fn broken_links<'a>(notes: &'a [Linked], resolver: &Resolver) -> Vec<(&'a NotePath, &'a str)> {
+pub fn broken_links<'notes>(
+    notes: &'notes [Linked],
+    resolver: &Resolver,
+) -> Vec<BrokenLink<'notes>> {
     notes
         .iter()
         .flat_map(|note| {
-            note.links
-                .iter()
-                .map(move |link| (&note.path, link.as_str()))
+            note.links.iter().map(move |link| BrokenLink {
+                note: &note.path,
+                link,
+            })
         })
-        .filter(|(_, link)| resolver.resolve(link) == Target::Missing)
+        .filter(|broken| resolver.resolve(broken.link) == Target::Missing)
         .collect()
 }
 
@@ -225,7 +238,13 @@ mod tests {
         let resolver = Resolver::new(report.done.iter().map(|note| &note.path));
 
         let broken = broken_links(&report.done, &resolver);
-        assert_eq!(broken, [(&NotePath::new("a.md"), "gone|alias")]);
+        assert_eq!(
+            broken,
+            [BrokenLink {
+                note: &NotePath::new("a.md"),
+                link: "gone|alias",
+            }]
+        );
         assert_eq!(
             orphans(&report.done, &resolver),
             [&NotePath::new("lonely.md")]

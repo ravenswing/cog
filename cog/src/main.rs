@@ -14,7 +14,7 @@ use tracing_subscriber::prelude::*;
 
 use cog::check::check_vault;
 use cog::config::Config;
-use cog::links::{Resolver, broken_links, linked_notes, orphans};
+use cog::links::{BrokenLink, Resolver, broken_links, linked_notes, orphans};
 use cog::lock::RunLock;
 use cog::organise::{apply_moves, plan_moves};
 use cog::query::{Match, TagQuery, count_tags, tagged_notes};
@@ -306,8 +306,8 @@ fn links(config: &Config, check: LinkCheck, vault: VaultName) -> Result<ExitCode
     let found = match check {
         LinkCheck::Broken => {
             let broken = broken_links(&report.done, &resolver);
-            for (path, link) in &broken {
-                println!("{path}: [[{link}]]");
+            for BrokenLink { note, link } in &broken {
+                println!("{note}: [[{link}]]");
             }
             !broken.is_empty()
         }
