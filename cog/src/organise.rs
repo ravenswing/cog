@@ -7,7 +7,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
 
-use crate::error::{Error, IoContext, Result};
+use crate::error::{Error, IoResultExt, Result};
 use crate::note::load_tags;
 use crate::report::Report;
 use crate::tags::Tag;

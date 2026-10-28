@@ -10,7 +10,7 @@ use std::io::{self, ErrorKind, Write};
 use std::path::Path;
 use tempfile::NamedTempFile;
 
-use crate::error::{IoContext, Result};
+use crate::error::{IoResultExt, Result};
 
 /// Writes `contents` to `path`, keeping the permissions of any file it replaces.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {

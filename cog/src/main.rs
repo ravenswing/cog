@@ -19,7 +19,7 @@ use cog::lock::RunLock;
 use cog::organise::{apply_moves, plan_moves};
 use cog::query::{Match, TagQuery, count_tags, tagged_notes};
 use cog::state;
-use cog::sync::{Action, BackUpdate, apply, plan_sync};
+use cog::sync::{self, Action, BackUpdate, plan_sync};
 use cog::tags::Tag;
 use cog::title::{apply_titles, plan_titles};
 use cog::vault::Vault;
@@ -202,7 +202,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Sync {
             dry_run,
             no_back_update,
-        } => sync(&config, dry_run, back_update(no_back_update)),
+        } => run_sync(&config, dry_run, back_update(no_back_update)),
         Command::Status { no_back_update } => status(&config, back_update(no_back_update)),
         Command::Title { vault, dry_run } => title(&config, vault, dry_run),
         Command::Organise {
@@ -429,7 +429,7 @@ fn ago(elapsed: Duration) -> String {
     format!("{count} {unit}{plural} ago")
 }
 
-fn sync(config: &Config, dry_run: bool, back_update: BackUpdate) -> Result<ExitCode> {
+fn run_sync(config: &Config, dry_run: bool, back_update: BackUpdate) -> Result<ExitCode> {
     let src = Vault::open(&config.vaults.work)?;
     let dest = Vault::open(&config.vaults.main)?;
     let state_path = state::default_path();
@@ -455,7 +455,7 @@ fn sync(config: &Config, dry_run: bool, back_update: BackUpdate) -> Result<ExitC
     let plan = if dry_run {
         plan
     } else {
-        let plan = apply(plan, &src, &dest);
+        let plan = sync::apply(plan, &src, &dest);
         match plan.completed_at() {
             Some(time) => state::write_last_sync(&state_path, time)
                 .context("synced, but failed to record the sync time")?,

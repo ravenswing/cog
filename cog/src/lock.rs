@@ -3,7 +3,7 @@
 use std::fs::{self, File, TryLockError};
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, IoContext, Result};
+use crate::error::{Error, IoResultExt, Result};
 
 /// Holds the run lock until dropped.
 ///

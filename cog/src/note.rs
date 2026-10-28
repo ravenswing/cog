@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::error::{Error, IoContext, Result};
+use crate::error::{Error, IoResultExt, Result};
 use crate::tags::{Tag, extract_tags};
 
 /// How many lines of the body are searched for an H1 title.

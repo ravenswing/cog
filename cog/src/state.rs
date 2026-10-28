@@ -7,7 +7,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::error::{Error, IoContext, Result};
+use crate::error::{Error, IoResultExt, Result};
 use crate::fsutil::write_atomic;
 
 /// Environment variable that overrides the state file location.

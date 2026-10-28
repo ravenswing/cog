@@ -1,5 +1,6 @@
 use std::io;
 use std::path::PathBuf;
+use std::time::SystemTimeError;
 
 /// Everything that can go wrong inside the cog library.
 #[derive(Debug, thiserror::Error)]
@@ -36,7 +37,7 @@ pub enum Error {
     StateEncode(#[source] toml::ser::Error),
 
     #[error("the system clock is set before 1970")]
-    Clock(#[source] std::time::SystemTimeError),
+    Clock(#[source] SystemTimeError),
 
     #[error("frontmatter in {path} has no closing `---`")]
     UnclosedFrontmatter { path: PathBuf },
@@ -64,11 +65,11 @@ pub enum Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Attaches an action and path to an [`io::Error`].
-pub(crate) trait IoContext<T> {
+pub(crate) trait IoResultExt<T> {
     fn ctx(self, action: &'static str, path: impl Into<PathBuf>) -> Result<T>;
 }
 
-impl<T> IoContext<T> for io::Result<T> {
+impl<T> IoResultExt<T> for io::Result<T> {
     fn ctx(self, action: &'static str, path: impl Into<PathBuf>) -> Result<T> {
         self.map_err(|source| Error::Io {
             action,

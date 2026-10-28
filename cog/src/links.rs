@@ -13,7 +13,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
 
-use crate::error::{IoContext, Result};
+use crate::error::{IoResultExt, Result};
 use crate::report::Report;
 use crate::vault::{NotePath, Vault};
 

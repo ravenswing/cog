@@ -6,7 +6,7 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use crate::error::{Error, IoContext, Result};
+use crate::error::{Error, IoResultExt, Result};
 use crate::fsutil::write_atomic;
 use crate::note::{Split, split_frontmatter};
 use crate::report::Report;

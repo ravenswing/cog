@@ -18,7 +18,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use crate::config::SyncConfig;
-use crate::error::{Error, IoContext, Result};
+use crate::error::{Error, IoResultExt, Result};
 use crate::fsutil::copy_preserving_mtime;
 use crate::note::load_tags;
 use crate::report::Report;
